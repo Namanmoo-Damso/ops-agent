@@ -567,7 +567,7 @@ async def entrypoint(ctx: JobContext):
             userdata.add_transcript("user", ev.transcript)
             asyncio.create_task(broadcast_transcript("user", ev.transcript))
 
-    session.say("안녕하세요, 어르신. 오늘 어떻게 지내셨어요?")
+    # Greeting is handled in ElderlyCompanionAgent.on_enter()
 
     async def poll_for_admin():
         """Periodically check for admin presence since events may not fire."""
