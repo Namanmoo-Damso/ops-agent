@@ -236,7 +236,7 @@ async def fetch_call_context(room_name: str) -> Optional[dict]:
     return None
 
 
-@server.rtc_session()
+@server.rtc_session(agent_name="voice-agent")
 async def entrypoint(ctx: JobContext):
     """
     Main entrypoint for the AI agent when joining a room.
@@ -357,7 +357,6 @@ async def entrypoint(ctx: JobContext):
                 payload,
                 reliable=True,
             )
-            logger.info(f"📡 Broadcasted {role} transcript: {text[:20]}...")
         except Exception as e:
             logger.error(f"Failed to broadcast transcript: {e}")
 
@@ -394,19 +393,11 @@ async def entrypoint(ctx: JobContext):
                 
                 if content and content.strip():
                     userdata.add_transcript("agent", content)
-                    logger.info(f"🤖 Agent response: {content}")
                     # Broadcast to frontend
                     asyncio.create_task(broadcast_transcript("agent", content))
-            else:
-                logger.debug(f"Conversation item added: role={getattr(item, 'role', 'unknown')}")
         except Exception as e:
             logger.error(f"Error in conversation_item_added handler: {e}")
 
-    # Event: Speech created (backup - logs when agent starts speaking)
-    @session.on("speech_created")
-    def on_speech_created(ev):
-        """Log when agent speech is created."""
-        logger.info(f"🎤 Speech created: source={getattr(ev, 'source', 'unknown')}")
 
     # Event: Session end
     @session.on("session_end")
@@ -490,7 +481,6 @@ async def entrypoint(ctx: JobContext):
             session.interrupt()
         elif not admin_present and takeover_active:
             takeover_active = False
-            logger.info("🟢 ADMIN LEFT - Agent resuming")
             session.say("네, 다시 대화를 이어가겠습니다.")
 
     def log_all_participants():
@@ -505,34 +495,25 @@ async def entrypoint(ctx: JobContext):
     @ctx.room.on("participant_connected")
     def on_participant_connected(participant):
         """Handle new participant joining."""
-        logger.info(f"👤 Participant connected: {participant.identity}")
-        log_all_participants()
         if participant.identity.startswith('admin_'):
-            logger.info("🔴 Admin joined room - preparing for takeover")
             update_takeover_state()
 
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(participant):
         """Handle participant leaving."""
-        logger.info(f"👤 Participant disconnected: {participant.identity}")
         if participant.identity.startswith('admin_'):
-            logger.info("🟢 Admin left room - ending takeover")
             update_takeover_state()
 
     @ctx.room.on("track_published")
     def on_track_published(publication, participant):
         """Handle track publication - admin audio means takeover."""
-        logger.info(f"🎙️ Track published: kind={publication.kind} from {participant.identity} (is_admin={participant.identity.startswith('admin_')})")
-        if participant.identity.startswith('admin_') and publication.kind == 1:  # 1 = AUDIO
-            logger.info(f"🔴 Admin started publishing audio: {participant.identity}")
+        if participant.identity.startswith('admin_') and publication.kind == 1:
             update_takeover_state()
 
     @ctx.room.on("track_unpublished")
     def on_track_unpublished(publication, participant):
         """Handle track unpublish - admin audio stop means takeover end."""
-        logger.info(f"🎙️ Track unpublished: kind={publication.kind} from {participant.identity} (is_admin={participant.identity.startswith('admin_')})")
-        if participant.identity.startswith('admin_') and publication.kind == 1:  # 1 = AUDIO
-            logger.info(f"🟢 Admin stopped publishing audio: {participant.identity}")
+        if participant.identity.startswith('admin_') and publication.kind == 1:
             update_takeover_state()
 
     @ctx.room.on("room_metadata_changed")
@@ -540,47 +521,32 @@ async def entrypoint(ctx: JobContext):
         """Handle room metadata changes - PRIMARY takeover detection mechanism."""
         nonlocal takeover_active
         try:
-            logger.info(f"📋 Room metadata changed: {new_metadata}")
             import json
             data = json.loads(new_metadata) if new_metadata else {}
             
             if data.get("takeover") and not takeover_active:
                 takeover_active = True
-                logger.info("🔴 METADATA: Takeover started - Agent pausing")
-                # Stop all agent processing
                 session.interrupt()
-                session.clear_user_turn()  # Clear any pending user input
-                logger.info("🔴 Agent fully paused - speech and input cleared")
+                session.clear_user_turn()
             elif not data.get("takeover") and takeover_active:
                 takeover_active = False
-                logger.info("🟢 METADATA: Takeover ended - Agent resuming")
                 session.say("네, 다시 대화를 이어가겠습니다.")
         except Exception as e:
             logger.error(f"Error processing room metadata: {e}")
 
-    logger.info("Room event handlers registered for takeover detection")
 
     # Wait for participant to join
     await asyncio.sleep(3)
 
     bot_identity = await wait_for_bot_identity()
-    # Find target participant to listen to
-    # Priority: 1) bot-* participant, 2) first non-admin participant, 3) None (listen to all)
     target_identity = None
-    logger.info(f"Participants in room: {len(ctx.room.remote_participants)}")
     for p in ctx.room.remote_participants.values():
-        logger.info(f"  - {p.identity}")
         if p.identity.startswith('bot-'):
             target_identity = p.identity
-            logger.info(f"Agent will listen to bot: {target_identity}")
             break
         elif not p.identity.startswith('admin_') and target_identity is None:
-            # First non-admin participant as fallback
             target_identity = p.identity
-            logger.info(f"Agent will listen to user: {target_identity}")
 
-    if not target_identity:
-        logger.warning("No suitable participant found - agent will listen to all participants")
 
     # Start session with target participant
     await session.start(
@@ -592,51 +558,36 @@ async def entrypoint(ctx: JobContext):
         ),
     )
 
-    # User input handler that respects takeover state
     @session.on("user_input_transcribed")
     def on_user_transcript_with_takeover(ev):
         """Capture user transcripts but ignore during takeover."""
         if takeover_active:
-            logger.info(f"⏸️ Ignoring user input during takeover: {ev.transcript}")
             return
         if ev.is_final:
             userdata.add_transcript("user", ev.transcript)
-            logger.info(f"👤 User transcript: {ev.transcript}")
-            # Broadcast to frontend
             asyncio.create_task(broadcast_transcript("user", ev.transcript))
-        # Note: AgentSession automatically handles LLM response generation
 
-    # Greeting
     session.say("안녕하세요, 어르신. 오늘 어떻게 지내셨어요?")
 
-    logger.info(f"Agent ready and listening in room: {ctx.room.name}")
-
-    # Start async polling task to detect admin presence (fallback for missed events)
     async def poll_for_admin():
         """Periodically check for admin presence since events may not fire."""
         nonlocal takeover_active
         last_state = False
         while True:
             try:
-                await asyncio.sleep(2)  # Check every 2 seconds
-                
-                # Check for admin with audio
+                await asyncio.sleep(2)
                 admin_present = False
                 for p in ctx.room.remote_participants.values():
                     if p.identity.startswith('admin_'):
-                        logger.info(f"🔍 Polling: Found admin {p.identity} with {len(p.track_publications)} tracks")
                         for pub in p.track_publications.values():
-                            if pub.kind == 1:  # AUDIO
+                            if pub.kind == 1:
                                 admin_present = True
                                 break
                 
-                # Detect state change
                 if admin_present and not last_state:
-                    logger.info("🔴 POLLING: Admin audio detected - pausing agent")
                     takeover_active = True
                     session.interrupt()
                 elif not admin_present and last_state:
-                    logger.info("🟢 POLLING: Admin audio gone - resuming agent")
                     takeover_active = False
                     session.say("네, 다시 대화를 이어가겠습니다.")
                 
@@ -646,9 +597,7 @@ async def entrypoint(ctx: JobContext):
             except Exception as e:
                 logger.error(f"Polling error: {e}")
 
-    # Start the polling task
     poll_task = asyncio.create_task(poll_for_admin())
-    logger.info("Admin detection polling started")
 
     # Keep the job alive until post-session tasks finish.
     await session_end_event.wait()

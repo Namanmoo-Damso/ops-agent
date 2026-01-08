@@ -1,21 +1,15 @@
 services:
-  redis:
-    image: redis:7-alpine
-    command: ['redis-server', '--save', '60', '1', '--loglevel', 'warning']
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    restart: unless-stopped
-
-  agent:
+  voice-agent:
     build: .
     env_file: ./agent.env
     network_mode: host
     restart: unless-stopped
+    command: ["python", "voice/simple_agent.py", "start"]
 
-volumes:
-  redis_data:
+  video-agent:
+    build: .
+    env_file: ./agent.env
+    network_mode: host
+    restart: unless-stopped
+    # dockefile에 있는 CMD을 override / 덮어쓴다
+    command: ["python", "voice/video-agent.py", "start"]
