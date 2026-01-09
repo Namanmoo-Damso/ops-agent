@@ -53,13 +53,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Redis client (async) initialization
+# Redis client (async) initialization for Pub/Sub
 redis_client = None
 redis_init_lock = asyncio.Lock()
 
+# Redis Pub/Sub channels
+TRANSCRIPT_CHANNEL = "transcripts"
+CALL_END_CHANNEL = "call_end"
+
 
 async def init_redis_client():
-    """Initialize Redis client asynchronously to avoid blocking the event loop."""
+    """Initialize Redis client asynchronously for publishing events."""
     global redis_client
     if redis_client:
         return
@@ -74,7 +78,7 @@ async def init_redis_client():
                 decode_responses=True,
             )
             await redis_client.ping()
-            logger.info("Successfully connected to Redis")
+            logger.info("Successfully connected to Redis for Pub/Sub")
         except redis.exceptions.ConnectionError as e:
             logger.error(f"Failed to connect to Redis: {e}")
             redis_client = None
@@ -92,11 +96,7 @@ if not API_BASE:
 API_INTERNAL_TOKEN = os.getenv("API_INTERNAL_TOKEN")
 
 # Timeouts (seconds)
-TIMEOUT_RAG_INDEXING = 5.0
-TIMEOUT_CALL_ANALYSIS = 5.0
 TIMEOUT_CALL_CONTEXT = 5.0
-TIMEOUT_CALL_END = 5.0
-TIMEOUT_POST_SESSION = 10.0
 
 # Create AgentServer instance
 server = AgentServer()
@@ -175,37 +175,22 @@ def _get_auth_headers() -> dict:
     return headers
 
 
-async def trigger_rag_indexing(call_id: str, ward_id: str):
-    """Trigger RAG indexing after session ends."""
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{API_BASE}/v1/rag/index",
-                json={
-                    "callId": call_id,
-                    "wardId": ward_id,
-                },
-                headers=_get_auth_headers(),
-                timeout=TIMEOUT_RAG_INDEXING,
-            )
-            logger.info(f"RAG indexing triggered: call={call_id}")
-    except Exception as e:
-        logger.error(f"RAG indexing trigger failed: {e}")
+async def publish_call_end_event(call_id: str, ward_id: str):
+    """Publish call end event to Redis Pub/Sub for storage service to handle."""
+    if not redis_client:
+        logger.warning("Redis client not available, cannot publish call_end event")
+        return
 
-
-async def trigger_call_end(call_id: str):
-    """Inform API that the call ended so it can finalize state and summaries."""
     try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{API_BASE}/v1/calls/end",
-                json={"callId": call_id},
-                headers=_get_auth_headers(),
-                timeout=TIMEOUT_CALL_END,
-            )
-            logger.info(f"Call end notified: call={call_id}")
+        event = {
+            "call_id": call_id,
+            "ward_id": ward_id,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        await redis_client.publish(CALL_END_CHANNEL, json.dumps(event, ensure_ascii=False))
+        logger.info(f"Published call_end event: call={call_id}")
     except Exception as e:
-        logger.error(f"Call end trigger failed: {e}")
+        logger.error(f"Failed to publish call_end event: {e}")
 
 
 async def fetch_call_context(room_name: str) -> Optional[dict]:
@@ -298,29 +283,24 @@ async def entrypoint(ctx: JobContext):
         max_endpointing_delay=5.0,
     )
 
-    async def add_transcript_to_redis(speaker_type: str, text: str):
-        """Helper to create and push transcript to Redis."""
+    async def publish_transcript_event(speaker_type: str, text: str):
+        """Publish transcript event to Redis Pub/Sub for storage service."""
         if not redis_client:
-            logger.warning("Redis client not available, skipping transcript storage.")
+            logger.warning("Redis client not available, cannot publish transcript event")
             return
 
         try:
             timestamp = datetime.utcnow().isoformat()
-            transcript_entry = {
+            event = {
+                "call_id": call_id,
                 "speaker": speaker_type,
                 "text": text,
                 "timestamp": timestamp,
             }
-            redis_key = f"call:{call_id}:transcripts"
-            pipe = redis_client.pipeline()
-            pipe.rpush(redis_key, json.dumps(transcript_entry, ensure_ascii=False))
-            pipe.expire(redis_key, 3600 * 24)  # 24 hours
-            await pipe.execute()
-            logger.debug(f"Saved to Redis: {speaker_type} - {text}")
-        except redis.exceptions.RedisError as e:
-            logger.error(f"Failed to save transcript to Redis: {e}")
+            await redis_client.publish(TRANSCRIPT_CHANNEL, json.dumps(event, ensure_ascii=False))
+            logger.debug(f"Published transcript: {speaker_type} - {text}")
         except Exception as e:
-            logger.error(f"An unexpected error occurred while saving to Redis: {e}")
+            logger.error(f"Failed to publish transcript event: {e}")
 
     # Event: User transcript received
     @session.on("user_input_transcribed")
@@ -330,8 +310,8 @@ async def entrypoint(ctx: JobContext):
             # Store in-memory
             userdata.add_transcript("user", ev.transcript)
             logger.debug(f"User transcript: {ev.transcript}")
-            # Store in Redis
-            asyncio.create_task(add_transcript_to_redis("user", ev.transcript))
+            # Publish to storage service
+            asyncio.create_task(publish_transcript_event("user", ev.transcript))
 
     # Event: Agent speech
     @session.on("agent_speech_committed")
@@ -341,8 +321,8 @@ async def entrypoint(ctx: JobContext):
             # Store in-memory
             userdata.add_transcript("agent", ev.content)
             logger.debug(f"Agent response: {ev.content}")
-            # Store in Redis
-            asyncio.create_task(add_transcript_to_redis("agent", ev.content))
+            # Publish to storage service (Redis)
+            asyncio.create_task(publish_transcript_event("agent", ev.content))
 
     session_end_event = asyncio.Event()
     post_session_task = None
@@ -396,6 +376,8 @@ async def entrypoint(ctx: JobContext):
                 
                 if content and content.strip():
                     userdata.add_transcript("agent", content)
+                    # Publish to Redis for storage
+                    asyncio.create_task(publish_transcript_event("agent", content))
                     # Broadcast to frontend
                     asyncio.create_task(broadcast_transcript("agent", content))
         except Exception as e:
@@ -406,8 +388,8 @@ async def entrypoint(ctx: JobContext):
     @session.on("session_end")
     def on_session_end(report):
         """
-        Handle session end - trigger analysis and indexing.
-        
+        Handle session end - publish call_end event for storage service.
+
         SessionReport contains:
         - session_id
         - duration
@@ -417,22 +399,12 @@ async def entrypoint(ctx: JobContext):
             logger.info(f"Session ended: {report.session_id if hasattr(report, 'session_id') else call_id}")
             logger.info(f"Total transcripts: {len(userdata.transcripts)}")
 
-            # Run post-session tasks with timeout
-            tasks = [
-                trigger_call_end(call_id),
-                trigger_rag_indexing(call_id, ward_id),
-            ]
-
+            # Publish call_end event to storage service
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True),
-                    timeout=TIMEOUT_POST_SESSION,
-                )
-                logger.info("Post-session tasks completed")
-            except asyncio.TimeoutError:
-                logger.warning("Post-session tasks timed out")
+                await publish_call_end_event(call_id, ward_id)
+                logger.info("Call end event published")
             except Exception as e:
-                logger.error(f"Post-session tasks failed: {e}")
+                logger.error(f"Failed to publish call_end event: {e}")
 
         nonlocal post_session_task
         post_session_task = asyncio.create_task(_run_post_session_tasks())
