@@ -34,6 +34,9 @@ from userdata import SessionUserdata
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
+# Agent name for routing (instance-specific in dev, unified in prod)
+AGENT_NAME = os.getenv("AGENT_NAME", "voice-agent")
+
 # Validate environment variables before proceeding
 try:
     env_config = validate_env_vars()
@@ -236,7 +239,7 @@ async def fetch_call_context(room_name: str) -> Optional[dict]:
     return None
 
 
-@server.rtc_session(agent_name="voice-agent")
+@server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext):
     """
     Main entrypoint for the AI agent when joining a room.
