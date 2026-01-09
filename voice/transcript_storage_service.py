@@ -19,6 +19,17 @@ import httpx
 import redis.asyncio as redis_async
 from dotenv import load_dotenv
 
+from constants import (
+    TRANSCRIPT_CHANNEL,
+    TTS_CHANNEL,
+    CALL_END_CHANNEL,
+    TIMEOUT_RAG_INDEXING,
+    TIMEOUT_CALL_END,
+    REDIS_MAX_RETRIES,
+    REDIS_RETRY_DELAY,
+    REDIS_RETRY_BACKOFF,
+)
+
 # Load environment variables
 load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
@@ -32,17 +43,10 @@ logger = logging.getLogger(__name__)
 
 # Redis configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-TRANSCRIPT_CHANNEL = "transcripts"
-TTS_CHANNEL = "tts_transcripts"
-CALL_END_CHANNEL = "call_end"
 
 # API configuration
 API_BASE = os.getenv("API_BASE_URL", "http://localhost:3000")
 API_INTERNAL_TOKEN = os.getenv("API_INTERNAL_TOKEN")
-
-# Timeouts
-TIMEOUT_RAG_INDEXING = 5.0
-TIMEOUT_CALL_END = 5.0
 
 
 def _get_auth_headers() -> dict:
@@ -171,52 +175,79 @@ async def handle_call_end_message(message: dict):
         logger.error(f"Error handling call_end message: {e}")
 
 
+async def connect_to_redis_with_retry():
+    """Connect to Redis with exponential backoff retry logic."""
+    for attempt in range(REDIS_MAX_RETRIES):
+        try:
+            redis_client = redis_async.from_url(REDIS_URL, decode_responses=True)
+            await redis_client.ping()
+            logger.info(f"Successfully connected to Redis (attempt {attempt + 1}/{REDIS_MAX_RETRIES})")
+            return redis_client
+        except Exception as e:
+            retry_delay = REDIS_RETRY_DELAY * (REDIS_RETRY_BACKOFF ** attempt)
+            logger.warning(f"Redis connection attempt {attempt + 1}/{REDIS_MAX_RETRIES} failed: {e}")
+            if attempt < REDIS_MAX_RETRIES - 1:
+                logger.info(f"Retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error("Failed to connect to Redis after all retries")
+                raise
+
+
 async def main():
-    """Main service loop."""
+    """Main service loop with automatic reconnection."""
     logger.info("Starting Transcript Storage Service...")
     logger.info(f"Connecting to Redis: {REDIS_URL}")
 
-    # Connect to Redis
-    redis_client = None
-    pubsub = None
+    while True:
+        redis_client = None
+        pubsub = None
 
-    try:
-        redis_client = redis_async.from_url(REDIS_URL, decode_responses=True)
-        await redis_client.ping()
-        logger.info("Successfully connected to Redis")
+        try:
+            # Connect to Redis with retry logic
+            redis_client = await connect_to_redis_with_retry()
 
-        # Subscribe to channels
-        pubsub = redis_client.pubsub()
-        await pubsub.subscribe(TRANSCRIPT_CHANNEL, TTS_CHANNEL, CALL_END_CHANNEL)
-        logger.info(f"Subscribed to channels: {TRANSCRIPT_CHANNEL}, {TTS_CHANNEL}, {CALL_END_CHANNEL}")
+            # Subscribe to channels
+            pubsub = redis_client.pubsub()
+            await pubsub.subscribe(TRANSCRIPT_CHANNEL, TTS_CHANNEL, CALL_END_CHANNEL)
+            logger.info(f"Subscribed to channels: {TRANSCRIPT_CHANNEL}, {TTS_CHANNEL}, {CALL_END_CHANNEL}")
 
-        # Listen for messages
-        async for message in pubsub.listen():
-            if message["type"] != "message":
-                continue
+            # Listen for messages
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
 
-            channel = message["channel"]
+                channel = message["channel"]
 
-            if channel == TRANSCRIPT_CHANNEL:
-                await handle_transcript_message(redis_client, message)
-            elif channel == TTS_CHANNEL:
-                await handle_tts_message(redis_client, message)
-            elif channel == CALL_END_CHANNEL:
-                await handle_call_end_message(message)
+                if channel == TRANSCRIPT_CHANNEL:
+                    await handle_transcript_message(redis_client, message)
+                elif channel == TTS_CHANNEL:
+                    await handle_tts_message(redis_client, message)
+                elif channel == CALL_END_CHANNEL:
+                    await handle_call_end_message(message)
 
-    except KeyboardInterrupt:
-        logger.info("Service stopped by user")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        sys.exit(1)
-    finally:
-        # Cleanup
-        if pubsub:
-            await pubsub.unsubscribe(TRANSCRIPT_CHANNEL, TTS_CHANNEL, CALL_END_CHANNEL)
-            await pubsub.close()
-        if redis_client:
-            await redis_client.close()
-        logger.info("Service shutdown complete")
+        except KeyboardInterrupt:
+            logger.info("Service stopped by user")
+            break
+        except Exception as e:
+            logger.error(f"Connection error: {e}")
+            logger.info(f"Reconnecting in {REDIS_RETRY_DELAY}s...")
+            await asyncio.sleep(REDIS_RETRY_DELAY)
+        finally:
+            # Cleanup
+            if pubsub:
+                try:
+                    await pubsub.unsubscribe(TRANSCRIPT_CHANNEL, TTS_CHANNEL, CALL_END_CHANNEL)
+                    await pubsub.close()
+                except Exception as e:
+                    logger.error(f"Error closing pubsub: {e}")
+            if redis_client:
+                try:
+                    await redis_client.close()
+                except Exception as e:
+                    logger.error(f"Error closing redis client: {e}")
+
+    logger.info("Service shutdown complete")
 
 
 if __name__ == "__main__":
