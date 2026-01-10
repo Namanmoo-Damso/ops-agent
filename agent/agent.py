@@ -7,16 +7,20 @@ import asyncio
 import os
 import sys
 import logging
+import time
 
 from livekit.agents import (
     AgentServer,
     AgentSession,
     JobContext,
     JobProcess,
-    RoomInputOptions,
+    MetricsCollectedEvent,
     cli,
+    room_io,
 )
+from livekit.agents.metrics import STTMetrics, LLMMetrics, TTSMetrics
 from livekit.plugins import aws, silero
+from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from config import validate_env_vars, get_optional_config, ConfigError
 from constants import TIMEOUT_RAG_CONTEXT_WARMUP
@@ -30,19 +34,28 @@ from handlers.session import (
     extract_ward_id,
     get_session_metadata,
     get_target_identity,
+    SessionEndHandler,
+    wait_for_participant,
 )
 from rag_client import get_shared_rag_client
 
 # Agent name for routing
 AGENT_NAME = os.getenv("AGENT_NAME", "voice-agent")
 
-# Validate environment variables
-try:
-    env_config = validate_env_vars()
-    optional_config = get_optional_config()
-except ConfigError as e:
-    print(f"Configuration Error: {e}", file=sys.stderr)
-    sys.exit(1)
+# Skip validation for download-files command (used during Docker build)
+_is_download_command = "download-files" in sys.argv
+
+if not _is_download_command:
+    # Validate environment variables
+    try:
+        env_config = validate_env_vars()
+        optional_config = get_optional_config()
+    except ConfigError as e:
+        print(f"Configuration Error: {e}", file=sys.stderr)
+        sys.exit(1)
+else:
+    env_config = {}
+    optional_config = {"LOG_LEVEL": "INFO"}
 
 # Set logging
 log_level = getattr(logging, optional_config["LOG_LEVEL"].upper(), logging.INFO)
@@ -62,7 +75,7 @@ def prewarm(proc: JobProcess):
         logger.info("Prewarming: Loading VAD model...")
         proc.userdata["vad"] = silero.VAD.load(
             min_speech_duration=0.3,
-            min_silence_duration=1.0,
+            min_silence_duration=0.5,
             activation_threshold=0.7,
         )
         logger.info("Prewarm complete")
@@ -191,14 +204,16 @@ async def entrypoint(ctx: JobContext):
         ),
         tts=aws.TTS(voice="Seoyeon"),
         vad=ctx.proc.userdata["vad"],
-        min_endpointing_delay=1.0,
-        max_endpointing_delay=5.0,
+        turn_detection=MultilingualModel(),
+        min_endpointing_delay=0.3,
+        max_endpointing_delay=2.0,
     )
 
     # Initialize handlers
-    transcript_handler = TranscriptHandler(call_id, ctx.room, userdata)
     takeover_handler = TakeoverHandler(ctx.room, session)
-
+    transcript_handler = TranscriptHandler(call_id, ctx.room)
+    session_end_handler = SessionEndHandler(call_id, ward_id)
+    
     # Register session event handlers
     @session.on("user_input_transcribed")
     def on_user_transcript(ev):
@@ -212,12 +227,40 @@ async def entrypoint(ctx: JobContext):
     def on_conversation_item(ev):
         transcript_handler.handle_conversation_item(ev)
 
+    @session.on("session_end")
+    def on_session_end(report):
+        session_end_handler.handle_session_end(report)
+
+    # Pipeline timing metrics
+    pipeline_logger = logging.getLogger("pipeline.metrics")
+    pipeline_times = {}
+
+    @session.on("user_input_transcribed")
+    def on_transcribed(ev):
+        pipeline_times["stt_end"] = time.time()
+
+    @session.on("metrics_collected")
+    def on_metrics(ev: MetricsCollectedEvent):
+        m = ev.metrics
+        if isinstance(m, LLMMetrics):
+            pipeline_times["llm"] = m.duration
+            pipeline_logger.info(f"[LLM] ttft={m.ttft:.3f}s total={m.duration:.3f}s tokens={m.completion_tokens}")
+        elif isinstance(m, TTSMetrics):
+            pipeline_times["tts"] = m.duration
+            pipeline_logger.info(f"[TTS] ttfb={m.ttfb:.3f}s total={m.duration:.3f}s")
+            # Calculate total pipeline and derive STT time
+            total = time.time() - pipeline_times.get("stt_end", time.time())
+            llm_time = pipeline_times.get("llm", 0)
+            tts_time = pipeline_times.get("tts", 0)
+            stt_time = max(0, total - llm_time - tts_time)
+            pipeline_logger.info(f"[PIPELINE] stt={stt_time:.3f}s llm={llm_time:.3f}s tts={tts_time:.3f}s total={total:.3f}s")
+
     # Register takeover handlers
     takeover_handler.register_event_handlers()
 
-    # Wait for participant
-    await asyncio.sleep(3)
-    target_identity = get_target_identity(ctx)
+    # Wait for iOS participant (non-admin)
+    target_identity = await wait_for_participant(ctx)
+    logger.info(f"Target participant: {target_identity}")
 
     # Create and start agent with conversation context
     agent = ElderlyCompanionAgent(
@@ -232,9 +275,9 @@ async def entrypoint(ctx: JobContext):
     await session.start(
         agent=agent,
         room=ctx.room,
-        room_input_options=RoomInputOptions(
-            close_on_disconnect=False,
+        room_options=room_io.RoomOptions(
             participant_identity=target_identity,
+            close_on_disconnect=False,
         ),
     )
 

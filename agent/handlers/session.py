@@ -54,32 +54,33 @@ def get_session_metadata(ctx: JobContext) -> dict:
 
 
 async def wait_for_participant(ctx: JobContext, timeout: float = 10.0) -> Optional[str]:
-    """Wait for a participant to join, preferring bot identity."""
+    """Wait for a non-admin participant (iOS user) to join."""
+
+    def find_target(participants) -> Optional[str]:
+        """Find first non-admin participant."""
+        for p in participants:
+            if not p.identity.startswith("admin"):
+                return p.identity
+        return None
+
+    # Check existing participants
     participants = list(ctx.room.remote_participants.values())
-
-    # Check for bot first
-    for p in participants:
-        if p.identity.startswith('bot-'):
-            logger.info(f"Agent will listen to bot: {p.identity}")
-            return p.identity
-
-    # Fallback to first non-admin participant
-    if participants:
-        logger.warning("Bot not found; using first participant")
-        return participants[0].identity
+    target = find_target(participants)
+    if target:
+        logger.info(f"Found target participant: {target}")
+        return target
 
     # Wait for participant
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.5)
         participants = list(ctx.room.remote_participants.values())
-        for p in participants:
-            if p.identity.startswith('bot-'):
-                logger.info(f"Agent will listen to bot: {p.identity}")
-                return p.identity
-        if participants:
-            return participants[0].identity
+        target = find_target(participants)
+        if target:
+            logger.info(f"Found target participant: {target}")
+            return target
 
+    logger.warning("No non-admin participant found within timeout")
     return None
 
 
@@ -97,10 +98,9 @@ def get_target_identity(ctx: JobContext) -> Optional[str]:
 class SessionEndHandler:
     """Handles session end events."""
 
-    def __init__(self, call_id: str, ward_id: str, userdata):
+    def __init__(self, call_id: str, ward_id: str):
         self.call_id = call_id
         self.ward_id = ward_id
-        self.userdata = userdata
         self.session_end_event = asyncio.Event()
         self._post_session_task = None
 
@@ -108,7 +108,6 @@ class SessionEndHandler:
         """Run cleanup tasks after session ends."""
         session_id = report.session_id if hasattr(report, 'session_id') else self.call_id
         logger.info(f"Session ended: {session_id}")
-        logger.info(f"Total transcripts: {len(self.userdata.transcripts)}")
 
         # Publish call_end event
         try:
