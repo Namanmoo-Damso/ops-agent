@@ -29,8 +29,6 @@ from userdata import SessionUserdata
 from services.redis_pubsub import get_redis_client, publish_call_end
 from services.api_client import fetch_call_context, notify_call_end
 from handlers.transcript import TranscriptHandler
-from services.redis_pubsub import get_redis_client
-from services.api_client import fetch_call_context
 from handlers.takeover import TakeoverHandler
 from handlers.session import (
     extract_ward_id,
@@ -214,7 +212,8 @@ async def entrypoint(ctx: JobContext):
     # Initialize handlers
     takeover_handler = TakeoverHandler(ctx.room, session)
     transcript_handler = TranscriptHandler(call_id, ctx.room)
-
+    session_end_handler = SessionEndHandler(call_id, ctx.room)
+    
     # Register session event handlers
     @session.on("user_input_transcribed")
     def on_user_transcript(ev):
