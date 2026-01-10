@@ -68,7 +68,7 @@ async def save_transcript_to_redis(redis_client, call_id: str, speaker: str, tex
         pipe.rpush(redis_key, json.dumps(transcript_entry, ensure_ascii=False))
         pipe.expire(redis_key, 3600 * 24)  # 24 hours
         await pipe.execute()
-        logger.debug(f"Saved to Redis: {call_id} - {speaker} - {text}")
+        logger.info(f"Saved to Redis: {call_id} - {speaker} - {text[:50]}")
     except Exception as e:
         logger.error(f"Failed to save transcript to Redis: {e}")
 
@@ -146,31 +146,74 @@ async def handle_tts_message(redis_client, message: dict):
         logger.error(f"Error handling TTS message: {e}")
 
 
-async def handle_call_end_message(message: dict):
-    """Handle call end notification."""
+async def handle_call_end_message(redis_client, message: dict):
+    """
+    Handle call end notification.
+
+    Process flow:
+    1. Verify transcripts exist in Redis (with retry)
+    2. Trigger call end → AI analysis
+    3. Trigger RAG indexing (automatic via AI service)
+
+    Note: Agent waits 5s after session end to ensure transcripts are saved.
+    """
     try:
         data = json.loads(message["data"])
         call_id = data.get("call_id")
         ward_id = data.get("ward_id")
 
         if not call_id or not ward_id:
-            logger.warning(f"Invalid call_end message: {data}")
+            logger.warning(f"❌ Invalid call_end message (missing call_id/ward_id): {data}")
             return
 
-        logger.info(f"Call ended: {call_id}, triggering post-processing")
+        logger.info(f"📞 Call ended: {call_id}, starting post-processing...")
+
+        # Verify transcripts exist in Redis (short retry; agent already waited before publishing)
+        transcript_count = 0
+        redis_key = f"call:{call_id}:transcripts"
+
+        try:
+            for attempt in range(5):
+                transcript_count = await redis_client.llen(redis_key)
+                if transcript_count and transcript_count > 0:
+                    logger.info(f"✅ Found {transcript_count} transcripts for call={call_id}")
+                    break
+                if attempt < 4:
+                    await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.warning(f"❌ Transcript verification error for call={call_id}: {e}")
+
+        if transcript_count == 0:
+            logger.warning(
+                f"⚠️  No transcripts found for call={call_id}; skipping RAG indexing and continuing with call_end only."
+            )
+            tasks = [trigger_call_end(call_id)]
+        else:
+            tasks = [
+                trigger_call_end(call_id),
+                trigger_rag_indexing(call_id, ward_id),
+            ]
 
         # Run post-processing tasks
-        tasks = [
-            trigger_call_end(call_id),
-            trigger_rag_indexing(call_id, ward_id),
-        ]
+        logger.info(f"🚀 Triggering post-processing for call={call_id}...")
 
-        await asyncio.gather(*tasks, return_exceptions=True)
-        logger.info(f"Post-processing completed for call: {call_id}")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Check results
+        for i, result in enumerate(results):
+            task_name = ["call_end", "rag_indexing"][i]
+            if isinstance(result, Exception):
+                logger.error(f"❌ {task_name} failed: {result}")
+
+        logger.info(
+            f"✅ Post-processing done for call={call_id} "
+            f"(transcripts={transcript_count})"
+        )
+
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to decode call_end message: {e}")
+        logger.error(f"Failed to decode call_end JSON: {e}")
     except Exception as e:
-        logger.error(f"Error handling call_end message: {e}")
+        logger.error(f"Unexpected error in call_end handler: {e}", exc_info=True)
 
 
 async def connect_to_redis_with_retry():
@@ -222,7 +265,7 @@ async def main():
                 elif channel == TTS_CHANNEL:
                     await handle_tts_message(redis_client, message)
                 elif channel == CALL_END_CHANNEL:
-                    await handle_call_end_message(message)
+                    await handle_call_end_message(redis_client, message)
 
         except KeyboardInterrupt:
             logger.info("Service stopped by user")

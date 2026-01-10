@@ -10,9 +10,11 @@ TTS_CHANNEL = "tts_transcripts"
 CALL_END_CHANNEL = "call_end"
 
 # Timeouts (seconds)
-TIMEOUT_CALL_CONTEXT = 5.0
-TIMEOUT_RAG_INDEXING = 5.0
-TIMEOUT_CALL_END = 5.0
+TIMEOUT_CALL_CONTEXT = 10.0       # RAG context/search default for PGVector queries
+TIMEOUT_RAG_INDEXING = 10.0       # RAG indexing trigger (embedding generation)
+TIMEOUT_CALL_END = 10.0           # Call end notification (AI analysis)
+TIMEOUT_RAG_CONTEXT_WARMUP = 2.0  # Fast context fetch during call startup
+TIMEOUT_RAG_SEARCH_QUICK = 3.0    # Quick RAG search during conversation
 
 # Redis retry configuration
 REDIS_MAX_RETRIES = 5

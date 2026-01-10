@@ -19,18 +19,19 @@ from livekit.agents import (
 from livekit.plugins import aws, silero
 
 from config import validate_env_vars, get_optional_config, ConfigError
+from constants import TIMEOUT_RAG_CONTEXT_WARMUP
 from personality.elderly_companion import ElderlyCompanionAgent, CallDirection
 from userdata import SessionUserdata
-from services.redis_pubsub import get_redis_client
-from services.api_client import fetch_call_context
+from services.redis_pubsub import get_redis_client, publish_call_end
+from services.api_client import fetch_call_context, notify_call_end
 from handlers.transcript import TranscriptHandler
 from handlers.takeover import TakeoverHandler
 from handlers.session import (
     extract_ward_id,
     get_session_metadata,
     get_target_identity,
-    SessionEndHandler,
 )
+from rag_client import get_shared_rag_client
 
 # Agent name for routing
 AGENT_NAME = os.getenv("AGENT_NAME", "voice-agent")
@@ -73,6 +74,62 @@ def prewarm(proc: JobProcess):
 server.setup_fnc = prewarm
 
 
+async def load_conversation_context(ward_id: str, timeout: float = TIMEOUT_RAG_CONTEXT_WARMUP) -> str:
+    """
+    Load recent conversation context for the ward using RAG.
+
+    This provides the AI agent with memory of past conversations.
+    Uses short timeout to avoid blocking session start.
+
+    Args:
+        ward_id: Ward UUID
+        timeout: Maximum time to wait for RAG response (default: 2.0s)
+
+    Returns:
+        Formatted context string or empty string on failure/timeout
+    """
+    try:
+        rag_client = get_shared_rag_client(timeout=timeout)
+
+        # Get recent conversation history with timeout protection
+        recent_context = await asyncio.wait_for(
+            rag_client.get_recent_context(
+                ward_id=ward_id,
+                limit=5,  # Last 5 conversation chunks
+            ),
+            timeout=timeout,
+        )
+
+        if not recent_context:
+            logger.info(f"No previous conversation history for ward: {ward_id}")
+            return ""
+
+        # Format context for AI - use .get() for safe access
+        context_parts = ["=== 최근 대화 기록 ==="]
+        for ctx in recent_context:
+            # Safe access: if keys missing, skip this entry
+            created_at = ctx.get("createdAt", "")
+            text = ctx.get("text", "")
+            if text:
+                # Limit text length for context
+                text_preview = text[:200] + "..." if len(text) > 200 else text
+                context_parts.append(f"\n[{created_at}]\n{text_preview}")
+
+        context_str = "\n".join(context_parts)
+        logger.info(f"Loaded conversation context for ward {ward_id}: {len(recent_context)} chunks")
+
+        return context_str
+
+    except asyncio.TimeoutError:
+        # Timeout is expected - don't block session start
+        logger.warning(f"RAG context load timed out after {timeout}s for ward {ward_id}, continuing without context")
+        return ""
+    except Exception as e:
+        # Any other error - continue without context
+        logger.warning(f"Failed to load conversation context for ward {ward_id}: {e}")
+        return ""
+
+
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext):
     """Main entrypoint for the AI agent when joining a room."""
@@ -106,6 +163,17 @@ async def entrypoint(ctx: JobContext):
 
     logger.info(f"Session info: ward_id={ward_id}, call_id={call_id}, direction={call_direction}")
 
+    # Load conversation context in background with timeout
+    # IMPORTANT: Don't block session start - RAG is optional enhancement
+    # If RAG is slow/unavailable, agent still starts and greets user
+    ward_context = ""
+    try:
+        # Try to load context with short timeout to avoid delaying session start
+        ward_context = await load_conversation_context(ward_id, timeout=TIMEOUT_RAG_CONTEXT_WARMUP)
+    except Exception as e:
+        # If context loading fails for any reason, continue without it
+        logger.warning(f"Context loading failed, starting agent without context: {e}")
+
     # Create session userdata
     userdata = SessionUserdata(
         ward_id=ward_id,
@@ -130,7 +198,6 @@ async def entrypoint(ctx: JobContext):
     # Initialize handlers
     transcript_handler = TranscriptHandler(call_id, ctx.room, userdata)
     takeover_handler = TakeoverHandler(ctx.room, session)
-    session_end_handler = SessionEndHandler(call_id, ward_id, userdata)
 
     # Register session event handlers
     @session.on("user_input_transcribed")
@@ -145,10 +212,6 @@ async def entrypoint(ctx: JobContext):
     def on_conversation_item(ev):
         transcript_handler.handle_conversation_item(ev)
 
-    @session.on("session_end")
-    def on_session_end(report):
-        session_end_handler.handle_session_end(report)
-
     # Register takeover handlers
     takeover_handler.register_event_handlers()
 
@@ -156,9 +219,16 @@ async def entrypoint(ctx: JobContext):
     await asyncio.sleep(3)
     target_identity = get_target_identity(ctx)
 
-    # Create and start agent
-    agent = ElderlyCompanionAgent(call_direction=call_direction)
+    # Create and start agent with conversation context
+    agent = ElderlyCompanionAgent(
+        ward_context=ward_context,  # Empty string if RAG failed/timed out
+        call_direction=call_direction
+    )
 
+    # Start takeover polling in background
+    takeover_task = asyncio.create_task(takeover_handler.start_polling())
+
+    # Start session (this blocks until session ends)
     await session.start(
         agent=agent,
         room=ctx.room,
@@ -168,11 +238,27 @@ async def entrypoint(ctx: JobContext):
         ),
     )
 
-    # Start takeover polling
-    await takeover_handler.start_polling()
+    # Session ended - cancel takeover polling
+    takeover_task.cancel()
+    try:
+        await takeover_task
+    except asyncio.CancelledError:
+        pass
 
-    # Wait for session to end
-    await session_end_handler.wait_for_completion()
+    # Run post-session tasks
+    logger.info(f"Session ended for call: {call_id}")
+
+    # Make sure pending transcript publications finish before call end
+    logger.info("Waiting for transcript publications to complete before publishing call_end")
+    await transcript_handler.wait_for_pending_publications(timeout=10.0)
+
+    try:
+        success = await publish_call_end(call_id, ward_id)
+        if not success:
+            await notify_call_end(call_id, ward_id)
+        logger.info("Call end event published")
+    except Exception as e:
+        logger.error(f"Failed to publish call_end event: {e}")
 
 
 if __name__ == "__main__":

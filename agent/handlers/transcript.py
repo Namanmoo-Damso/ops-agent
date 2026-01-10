@@ -98,3 +98,36 @@ class TranscriptHandler:
             else:
                 return str(raw_content)
         return ""
+
+    async def wait_for_pending_publications(self, timeout: float = 10.0):
+        """Wait for all pending transcript publication tasks to finish."""
+        if not self._background_tasks:
+            return
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        logger.info(f"Waiting for {len(self._background_tasks)} transcript publication task(s) to finish")
+
+        pending = self._background_tasks.copy()
+
+        while pending:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                logger.warning("Timeout while waiting for transcript publications to complete")
+                break
+
+            done, pending = await asyncio.wait(
+                pending,
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            # Drop completed tasks from tracker to avoid re-waiting
+            self._background_tasks.difference_update(done)
+
+            # Refresh pending set with any still-running tracked tasks
+            pending = self._background_tasks.copy()
+
+        if self._background_tasks:
+            # ensure any remaining tasks are awaited to avoid warnings
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
