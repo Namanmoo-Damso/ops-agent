@@ -168,39 +168,34 @@ async def handle_call_end_message(redis_client, message: dict):
 
         logger.info(f"📞 Call ended: {call_id}, starting post-processing...")
 
-        # Verify transcripts exist in Redis
+        # Verify transcripts exist in Redis (short retry; agent already waited before publishing)
         transcript_count = 0
         redis_key = f"call:{call_id}:transcripts"
 
         try:
-            # Retry up to 10 times (5 second total)
-            for attempt in range(10):
-                try:
-                    transcript_count = await redis_client.llen(redis_key)
-                    if transcript_count and transcript_count > 0:
-                        logger.info(f"✅ Found {transcript_count} transcripts for call={call_id}")
-                        break
-                    logger.debug(f"Waiting for transcripts... ({attempt + 1}/10)")
+            for attempt in range(5):
+                transcript_count = await redis_client.llen(redis_key)
+                if transcript_count and transcript_count > 0:
+                    logger.info(f"✅ Found {transcript_count} transcripts for call={call_id}")
+                    break
+                if attempt < 4:
                     await asyncio.sleep(0.5)
-                except Exception as e:
-                    logger.warning(f"Redis check error (attempt {attempt + 1}): {e}")
-                    await asyncio.sleep(0.5)
-
-            if transcript_count == 0:
-                logger.warning(
-                    f"⚠️  No transcripts found for call={call_id} after retries. "
-                    f"AI analysis and RAG indexing may have empty data."
-                )
         except Exception as e:
-            logger.error(f"❌ Transcript verification failed: {e}. Proceeding anyway...")
+            logger.warning(f"❌ Transcript verification error for call={call_id}: {e}")
+
+        if transcript_count == 0:
+            logger.warning(
+                f"⚠️  No transcripts found for call={call_id}; skipping RAG indexing and continuing with call_end only."
+            )
+            tasks = [trigger_call_end(call_id)]
+        else:
+            tasks = [
+                trigger_call_end(call_id),
+                trigger_rag_indexing(call_id, ward_id),
+            ]
 
         # Run post-processing tasks
         logger.info(f"🚀 Triggering post-processing for call={call_id}...")
-
-        tasks = [
-            trigger_call_end(call_id),
-            trigger_rag_indexing(call_id, ward_id),
-        ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 

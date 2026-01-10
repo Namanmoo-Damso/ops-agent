@@ -19,6 +19,7 @@ from livekit.agents import (
 from livekit.plugins import aws, silero
 
 from config import validate_env_vars, get_optional_config, ConfigError
+from constants import TIMEOUT_RAG_CONTEXT_WARMUP
 from personality.elderly_companion import ElderlyCompanionAgent, CallDirection
 from userdata import SessionUserdata
 from services.redis_pubsub import get_redis_client, publish_call_end
@@ -30,7 +31,7 @@ from handlers.session import (
     get_session_metadata,
     get_target_identity,
 )
-from rag_client import RagClient
+from rag_client import get_shared_rag_client
 
 # Agent name for routing
 AGENT_NAME = os.getenv("AGENT_NAME", "voice-agent")
@@ -73,7 +74,7 @@ def prewarm(proc: JobProcess):
 server.setup_fnc = prewarm
 
 
-async def load_conversation_context(ward_id: str, timeout: float = 2.0) -> str:
+async def load_conversation_context(ward_id: str, timeout: float = TIMEOUT_RAG_CONTEXT_WARMUP) -> str:
     """
     Load recent conversation context for the ward using RAG.
 
@@ -88,7 +89,7 @@ async def load_conversation_context(ward_id: str, timeout: float = 2.0) -> str:
         Formatted context string or empty string on failure/timeout
     """
     try:
-        rag_client = RagClient(timeout=int(timeout))
+        rag_client = get_shared_rag_client(timeout=timeout)
 
         # Get recent conversation history with timeout protection
         recent_context = await asyncio.wait_for(
@@ -96,7 +97,7 @@ async def load_conversation_context(ward_id: str, timeout: float = 2.0) -> str:
                 ward_id=ward_id,
                 limit=5,  # Last 5 conversation chunks
             ),
-            timeout=timeout
+            timeout=timeout,
         )
 
         if not recent_context:
@@ -167,8 +168,8 @@ async def entrypoint(ctx: JobContext):
     # If RAG is slow/unavailable, agent still starts and greets user
     ward_context = ""
     try:
-        # Try to load context with 2s timeout
-        ward_context = await load_conversation_context(ward_id, timeout=2.0)
+        # Try to load context with short timeout to avoid delaying session start
+        ward_context = await load_conversation_context(ward_id, timeout=TIMEOUT_RAG_CONTEXT_WARMUP)
     except Exception as e:
         # If context loading fails for any reason, continue without it
         logger.warning(f"Context loading failed, starting agent without context: {e}")

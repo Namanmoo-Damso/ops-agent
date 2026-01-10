@@ -108,17 +108,25 @@ class TranscriptHandler:
         deadline = loop.time() + timeout
         logger.info(f"Waiting for {len(self._background_tasks)} transcript publication task(s) to finish")
 
-        while self._background_tasks:
+        pending = self._background_tasks.copy()
+
+        while pending:
             remaining = deadline - loop.time()
             if remaining <= 0:
                 logger.warning("Timeout while waiting for transcript publications to complete")
                 break
 
-            tasks_snapshot = self._background_tasks.copy()
-            done, _ = await asyncio.wait(tasks_snapshot, timeout=remaining)
-            if not done:
-                # No task finished in this iteration, continue loop until timeout
-                continue
+            done, pending = await asyncio.wait(
+                pending,
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            # Drop completed tasks from tracker to avoid re-waiting
+            self._background_tasks.difference_update(done)
+
+            # Refresh pending set with any still-running tracked tasks
+            pending = self._background_tasks.copy()
 
         if self._background_tasks:
             # ensure any remaining tasks are awaited to avoid warnings

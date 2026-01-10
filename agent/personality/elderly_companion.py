@@ -6,6 +6,8 @@ from typing import Annotated
 from livekit.agents import Agent, RunContext, function_tool
 from pydantic import Field
 
+from constants import TIMEOUT_RAG_SEARCH_QUICK
+from rag_client import get_shared_rag_client
 from userdata import SessionUserdata
 
 logger = logging.getLogger(__name__)
@@ -133,66 +135,37 @@ class ElderlyCompanionAgent(Agent):
         Returns:
             Retrieved memory context or message if not found
         """
-        import httpx
-        import os
-
-        api_base = os.getenv("API_BASE_URL")
-        if not api_base:
-            logger.error("API_BASE_URL not configured")
-            return "시스템 설정 오류가 발생했습니다."
-
-        api_token = os.getenv("API_INTERNAL_TOKEN")
+        rag_client = get_shared_rag_client(timeout=TIMEOUT_RAG_SEARCH_QUICK)
         ward_id = context.userdata.ward_id
-
-        headers = {"Content-Type": "application/json"}
-        if api_token:
-            headers["Authorization"] = f"Bearer {api_token}"
 
         logger.info(f"RAG search: ward={ward_id}, query={query}")
 
         try:
-            async with httpx.AsyncClient() as client:
-                # Use GET request with query parameters (matches new RAG API)
-                response = await client.get(
-                    f"{api_base}/v1/rag/search",
-                    params={
-                        "wardId": ward_id,
-                        "query": query,
-                        "limit": 3,  # Get top 3 most relevant results
-                    },
-                    headers=headers,
-                    timeout=3.0,
-                )
+            results = await rag_client.search_similar(
+                ward_id=ward_id,
+                query=query,
+                limit=3,  # Top 3 for quick recall
+            )
 
-                if response.status_code != 200:
-                    logger.warning(f"RAG search failed: {response.status_code}")
-                    return "관련 기억을 찾을 수 없습니다."
+            if not results:
+                return "관련된 과거 대화가 없습니다."
 
-                data = response.json()
-                results = data.get("results", [])
+            # Format results into context
+            context_parts = []
+            for result in results:
+                text = result.get("text", "")
+                similarity = result.get("similarity", 0)
 
-                if not results:
-                    return "관련된 과거 대화가 없습니다."
+                # Only include results with reasonable similarity (>0.5)
+                if similarity > 0.5 and text:
+                    context_parts.append(text)
 
-                # Format results into context
-                context_parts = []
-                for result in results:
-                    text = result.get("text", "")
-                    similarity = result.get("similarity", 0)
+            if not context_parts:
+                return "관련된 과거 대화가 없습니다."
 
-                    # Only include results with reasonable similarity (>0.5)
-                    if similarity > 0.5 and text:
-                        context_parts.append(text)
+            context_text = "\n\n".join(context_parts)
+            return f"어르신과의 과거 대화에서 찾은 정보:\n{context_text}"
 
-                if not context_parts:
-                    return "관련된 과거 대화가 없습니다."
-
-                context_text = "\n\n".join(context_parts)
-                return f"어르신과의 과거 대화에서 찾은 정보:\n{context_text}"
-
-        except httpx.TimeoutException:
-            logger.warning("RAG search timeout")
-            return "기억 검색 시간이 초과되었습니다."
         except Exception as e:
             logger.error(f"RAG search error: {e}")
             return "기억 검색 중 오류가 발생했습니다."

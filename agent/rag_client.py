@@ -9,7 +9,12 @@ import logging
 from typing import List, Dict, Any, Optional
 import httpx
 
+from constants import (
+    TIMEOUT_CALL_CONTEXT,
+)
+
 logger = logging.getLogger(__name__)
+_shared_rag_client: Optional["RagClient"] = None
 
 
 class RagClient:
@@ -37,7 +42,7 @@ class RagClient:
         self,
         api_base: Optional[str] = None,
         api_token: Optional[str] = None,
-        timeout: int = 10,  # Reduced from 30 to 10 seconds (reasonable for PGVector HNSW)
+        timeout: float = TIMEOUT_CALL_CONTEXT,  # Default aligned with shared timeout config
     ):
         """
         Initialize RAG client
@@ -45,11 +50,11 @@ class RagClient:
         Args:
             api_base: Base URL for API (defaults to API_BASE_URL env var)
             api_token: Authentication token (defaults to API_INTERNAL_TOKEN env var, REQUIRED)
-            timeout: Request timeout in seconds (default: 10s for PGVector queries)
+            timeout: Request timeout in seconds
         """
         self.api_base = api_base or os.getenv("API_BASE_URL", "http://localhost:3000")
         self.api_token = api_token or os.getenv("API_INTERNAL_TOKEN")
-        self.timeout = timeout
+        self.timeout = float(timeout)
 
         # Ensure trailing slash is removed
         self.api_base = self.api_base.rstrip("/")
@@ -250,6 +255,21 @@ class RagClient:
             return ""
 
 
+def get_shared_rag_client(timeout: Optional[float] = None) -> "RagClient":
+    """
+    Get a shared RagClient instance to avoid recreating clients per request.
+
+    Args:
+        timeout: Optional timeout override; recreates the shared client if different.
+    """
+    global _shared_rag_client
+    if _shared_rag_client is None:
+        _shared_rag_client = RagClient(timeout=timeout) if timeout is not None else RagClient()
+    elif timeout is not None and _shared_rag_client.timeout != float(timeout):
+        _shared_rag_client = RagClient(timeout=timeout)
+    return _shared_rag_client
+
+
 # Convenience function for quick usage
 async def search_conversation_history(
     ward_id: str,
@@ -267,5 +287,5 @@ async def search_conversation_history(
     Returns:
         List of matching conversation chunks
     """
-    client = RagClient()
+    client = get_shared_rag_client()
     return await client.search_similar(ward_id, query, limit)
