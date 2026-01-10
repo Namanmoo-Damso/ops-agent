@@ -54,32 +54,33 @@ def get_session_metadata(ctx: JobContext) -> dict:
 
 
 async def wait_for_participant(ctx: JobContext, timeout: float = 10.0) -> Optional[str]:
-    """Wait for a participant to join, preferring bot identity."""
+    """Wait for a non-admin participant (iOS user) to join."""
+
+    def find_target(participants) -> Optional[str]:
+        """Find first non-admin participant."""
+        for p in participants:
+            if not p.identity.startswith("admin"):
+                return p.identity
+        return None
+
+    # Check existing participants
     participants = list(ctx.room.remote_participants.values())
-
-    # Check for bot first
-    for p in participants:
-        if p.identity.startswith('bot-'):
-            logger.info(f"Agent will listen to bot: {p.identity}")
-            return p.identity
-
-    # Fallback to first non-admin participant
-    if participants:
-        logger.warning("Bot not found; using first participant")
-        return participants[0].identity
+    target = find_target(participants)
+    if target:
+        logger.info(f"Found target participant: {target}")
+        return target
 
     # Wait for participant
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.5)
         participants = list(ctx.room.remote_participants.values())
-        for p in participants:
-            if p.identity.startswith('bot-'):
-                logger.info(f"Agent will listen to bot: {p.identity}")
-                return p.identity
-        if participants:
-            return participants[0].identity
+        target = find_target(participants)
+        if target:
+            logger.info(f"Found target participant: {target}")
+            return target
 
+    logger.warning("No non-admin participant found within timeout")
     return None
 
 

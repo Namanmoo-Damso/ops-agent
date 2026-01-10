@@ -8,15 +8,17 @@ import os
 import sys
 import logging
 
+from livekit import rtc
 from livekit.agents import (
     AgentServer,
     AgentSession,
     JobContext,
     JobProcess,
-    RoomInputOptions,
     cli,
+    room_io,
 )
-from livekit.plugins import aws, silero
+from livekit.plugins import aws, silero, noise_cancellation
+from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from config import validate_env_vars, get_optional_config, ConfigError
 from constants import TIMEOUT_RAG_CONTEXT_WARMUP
@@ -25,24 +27,35 @@ from userdata import SessionUserdata
 from services.redis_pubsub import get_redis_client, publish_call_end
 from services.api_client import fetch_call_context, notify_call_end
 from handlers.transcript import TranscriptHandler
+from services.redis_pubsub import get_redis_client
+from services.api_client import fetch_call_context
 from handlers.takeover import TakeoverHandler
 from handlers.session import (
     extract_ward_id,
     get_session_metadata,
     get_target_identity,
+    SessionEndHandler,
+    wait_for_participant,
 )
 from rag_client import get_shared_rag_client
 
 # Agent name for routing
 AGENT_NAME = os.getenv("AGENT_NAME", "voice-agent")
 
-# Validate environment variables
-try:
-    env_config = validate_env_vars()
-    optional_config = get_optional_config()
-except ConfigError as e:
-    print(f"Configuration Error: {e}", file=sys.stderr)
-    sys.exit(1)
+# Skip validation for download-files command (used during Docker build)
+_is_download_command = "download-files" in sys.argv
+
+if not _is_download_command:
+    # Validate environment variables
+    try:
+        env_config = validate_env_vars()
+        optional_config = get_optional_config()
+    except ConfigError as e:
+        print(f"Configuration Error: {e}", file=sys.stderr)
+        sys.exit(1)
+else:
+    env_config = {}
+    optional_config = {"LOG_LEVEL": "INFO"}
 
 # Set logging
 log_level = getattr(logging, optional_config["LOG_LEVEL"].upper(), logging.INFO)
@@ -191,13 +204,14 @@ async def entrypoint(ctx: JobContext):
         ),
         tts=aws.TTS(voice="Seoyeon"),
         vad=ctx.proc.userdata["vad"],
+        turn_detection=MultilingualModel(),
         min_endpointing_delay=1.0,
         max_endpointing_delay=5.0,
     )
 
     # Initialize handlers
-    transcript_handler = TranscriptHandler(call_id, ctx.room, userdata)
     takeover_handler = TakeoverHandler(ctx.room, session)
+    transcript_handler = TranscriptHandler(call_id, ctx.room, userdata)
 
     # Register session event handlers
     @session.on("user_input_transcribed")
@@ -212,12 +226,16 @@ async def entrypoint(ctx: JobContext):
     def on_conversation_item(ev):
         transcript_handler.handle_conversation_item(ev)
 
+    @session.on("session_end")
+    def on_session_end(report):
+        session_end_handler.handle_session_end(report)
+
     # Register takeover handlers
     takeover_handler.register_event_handlers()
 
-    # Wait for participant
-    await asyncio.sleep(3)
-    target_identity = get_target_identity(ctx)
+    # Wait for iOS participant (non-admin)
+    target_identity = await wait_for_participant(ctx)
+    logger.info(f"Target participant: {target_identity}")
 
     # Create and start agent with conversation context
     agent = ElderlyCompanionAgent(
@@ -232,9 +250,16 @@ async def entrypoint(ctx: JobContext):
     await session.start(
         agent=agent,
         room=ctx.room,
-        room_input_options=RoomInputOptions(
-            close_on_disconnect=False,
+        room_options=room_io.RoomOptions(
+            audio_input=room_io.AudioInputOptions(
+                noise_cancellation=lambda params: (
+                    noise_cancellation.BVCTelephony()
+                    if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+                    else noise_cancellation.BVC()
+                ),
+            ),
             participant_identity=target_identity,
+            close_on_disconnect=False,
         ),
     )
 

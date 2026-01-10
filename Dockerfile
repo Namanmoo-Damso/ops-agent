@@ -13,6 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Download turn detector model files
+RUN python agent/agent.py download-files
+
 ENV PYTHONUNBUFFERED=1
 
 # Default to agent.py with start command
