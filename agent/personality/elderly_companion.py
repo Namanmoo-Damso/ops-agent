@@ -152,12 +152,13 @@ class ElderlyCompanionAgent(Agent):
 
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(
+                # Use GET request with query parameters (matches new RAG API)
+                response = await client.get(
                     f"{api_base}/v1/rag/search",
-                    json={
+                    params={
                         "wardId": ward_id,
                         "query": query,
-                        "topK": 5,
+                        "limit": 3,  # Get top 3 most relevant results
                     },
                     headers=headers,
                     timeout=3.0,
@@ -168,11 +169,25 @@ class ElderlyCompanionAgent(Agent):
                     return "관련 기억을 찾을 수 없습니다."
 
                 data = response.json()
-                context_text = data.get("context", "")
+                results = data.get("results", [])
 
-                if not context_text:
+                if not results:
                     return "관련된 과거 대화가 없습니다."
 
+                # Format results into context
+                context_parts = []
+                for result in results:
+                    text = result.get("text", "")
+                    similarity = result.get("similarity", 0)
+
+                    # Only include results with reasonable similarity (>0.5)
+                    if similarity > 0.5 and text:
+                        context_parts.append(text)
+
+                if not context_parts:
+                    return "관련된 과거 대화가 없습니다."
+
+                context_text = "\n\n".join(context_parts)
                 return f"어르신과의 과거 대화에서 찾은 정보:\n{context_text}"
 
         except httpx.TimeoutException:
