@@ -98,10 +98,9 @@ def get_target_identity(ctx: JobContext) -> Optional[str]:
 class SessionEndHandler:
     """Handles session end events."""
 
-    def __init__(self, call_id: str, ward_id: str, userdata):
+    def __init__(self, call_id: str, ward_id: str):
         self.call_id = call_id
         self.ward_id = ward_id
-        self.userdata = userdata
         self.session_end_event = asyncio.Event()
         self._post_session_task = None
 
@@ -109,7 +108,6 @@ class SessionEndHandler:
         """Run cleanup tasks after session ends."""
         session_id = report.session_id if hasattr(report, 'session_id') else self.call_id
         logger.info(f"Session ended: {session_id}")
-        logger.info(f"Total transcripts: {len(self.userdata.transcripts)}")
 
         # Publish call_end event
         try:

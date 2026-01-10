@@ -212,7 +212,7 @@ async def entrypoint(ctx: JobContext):
     # Initialize handlers
     takeover_handler = TakeoverHandler(ctx.room, session)
     transcript_handler = TranscriptHandler(call_id, ctx.room)
-    session_end_handler = SessionEndHandler(call_id, ctx.room)
+    session_end_handler = SessionEndHandler(call_id, ward_id)
     
     # Register session event handlers
     @session.on("user_input_transcribed")
