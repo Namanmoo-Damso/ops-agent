@@ -7,17 +7,19 @@ import asyncio
 import os
 import sys
 import logging
+import time
 
-from livekit import rtc
 from livekit.agents import (
     AgentServer,
     AgentSession,
     JobContext,
     JobProcess,
+    MetricsCollectedEvent,
     cli,
     room_io,
 )
-from livekit.plugins import aws, silero, noise_cancellation
+from livekit.agents.metrics import STTMetrics, LLMMetrics, TTSMetrics
+from livekit.plugins import aws, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from config import validate_env_vars, get_optional_config, ConfigError
@@ -230,6 +232,30 @@ async def entrypoint(ctx: JobContext):
     def on_session_end(report):
         session_end_handler.handle_session_end(report)
 
+    # Pipeline timing metrics
+    pipeline_logger = logging.getLogger("pipeline.metrics")
+    pipeline_times = {}
+
+    @session.on("user_input_transcribed")
+    def on_transcribed(ev):
+        pipeline_times["stt_end"] = time.time()
+
+    @session.on("metrics_collected")
+    def on_metrics(ev: MetricsCollectedEvent):
+        m = ev.metrics
+        if isinstance(m, LLMMetrics):
+            pipeline_times["llm"] = m.duration
+            pipeline_logger.info(f"[LLM] ttft={m.ttft:.3f}s total={m.duration:.3f}s tokens={m.completion_tokens}")
+        elif isinstance(m, TTSMetrics):
+            pipeline_times["tts"] = m.duration
+            pipeline_logger.info(f"[TTS] ttfb={m.ttfb:.3f}s total={m.duration:.3f}s")
+            # Calculate total pipeline and derive STT time
+            total = time.time() - pipeline_times.get("stt_end", time.time())
+            llm_time = pipeline_times.get("llm", 0)
+            tts_time = pipeline_times.get("tts", 0)
+            stt_time = max(0, total - llm_time - tts_time)
+            pipeline_logger.info(f"[PIPELINE] stt={stt_time:.3f}s llm={llm_time:.3f}s tts={tts_time:.3f}s total={total:.3f}s")
+
     # Register takeover handlers
     takeover_handler.register_event_handlers()
 
@@ -251,13 +277,6 @@ async def entrypoint(ctx: JobContext):
         agent=agent,
         room=ctx.room,
         room_options=room_io.RoomOptions(
-            audio_input=room_io.AudioInputOptions(
-                noise_cancellation=lambda params: (
-                    noise_cancellation.BVCTelephony()
-                    if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
-                    else noise_cancellation.BVC()
-                ),
-            ),
             participant_identity=target_identity,
             close_on_disconnect=False,
         ),
