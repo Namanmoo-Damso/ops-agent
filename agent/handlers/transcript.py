@@ -12,10 +12,9 @@ logger = logging.getLogger(__name__)
 class TranscriptHandler:
     """Handles transcript publishing and broadcasting."""
 
-    def __init__(self, call_id: str, room, userdata):
+    def __init__(self, call_id: str, room):
         self.call_id = call_id
         self.room = room
-        self.userdata = userdata
         self._background_tasks: Set[asyncio.Task] = set()
 
     def _create_tracked_task(self, coro) -> asyncio.Task:
@@ -52,7 +51,6 @@ class TranscriptHandler:
         if takeover_active:
             return
         if ev.is_final:
-            self.userdata.add_transcript("user", ev.transcript)
             logger.debug(f"User transcript: {ev.transcript}")
             self._create_tracked_task(self.publish_transcript_event("user", ev.transcript))
             self._create_tracked_task(self.broadcast_to_room("user", ev.transcript))
@@ -60,7 +58,6 @@ class TranscriptHandler:
     def handle_agent_speech(self, ev):
         """Handle agent speech committed event."""
         if hasattr(ev, 'content') and ev.content:
-            self.userdata.add_transcript("agent", ev.content)
             logger.debug(f"Agent response: {ev.content}")
             self._create_tracked_task(self.publish_transcript_event("agent", ev.content))
 
@@ -71,7 +68,6 @@ class TranscriptHandler:
             if hasattr(item, 'role') and item.role == 'assistant':
                 content = self._extract_content(item)
                 if content and content.strip():
-                    self.userdata.add_transcript("agent", content)
                     self._create_tracked_task(self.publish_transcript_event("agent", content))
                     self._create_tracked_task(self.broadcast_to_room("agent", content))
         except Exception as e:
