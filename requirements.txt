@@ -1,6 +1,3 @@
-# Environment management
-python-dotenv>=1.0.0,<2.0.0
-
 # LiveKit AI Agents framework (1.3.x)
 livekit-agents>=1.3.10
 livekit-plugins-aws>=1.3.10

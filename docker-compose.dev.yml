@@ -1,26 +1,12 @@
 services:
-  voice-agent:
+  agent:
     build: .
     env_file: ./agent.env
     network_mode: host
     restart: unless-stopped
-    command: ["python", "voice/simple_agent.py", "start"]
+    command: ["python", "agent/agent.py", "start"]
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f simple_agent.py || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
-  video-agent:
-    build: .
-    env_file: ./agent.env
-    network_mode: host
-    restart: unless-stopped
-    # dockefile에 있는 CMD을 override / 덮어쓴다
-    command: ["python", "voice/video-agent.py", "start"]
-    healthcheck:
-      test: ["CMD-SHELL", "pgrep -f video-agent.py || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f agent.py || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -31,13 +17,12 @@ services:
     env_file: ./agent.env
     network_mode: host
     restart: unless-stopped
-    command: ["python", "voice/transcript_storage_service.py"]
+    command: ["python", "agent/storage/transcript_listener.py"]
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f transcript_storage_service.py || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f transcript_listener.py || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
     depends_on:
-      - voice-agent
-      - video-agent
+      - agent
