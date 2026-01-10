@@ -77,7 +77,7 @@ def prewarm(proc: JobProcess):
         logger.info("Prewarming: Loading VAD model...")
         proc.userdata["vad"] = silero.VAD.load(
             min_speech_duration=0.3,
-            min_silence_duration=1.0,
+            min_silence_duration=0.5,
             activation_threshold=0.7,
         )
         logger.info("Prewarm complete")
@@ -207,8 +207,8 @@ async def entrypoint(ctx: JobContext):
         tts=aws.TTS(voice="Seoyeon"),
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
-        min_endpointing_delay=1.0,
-        max_endpointing_delay=5.0,
+        min_endpointing_delay=0.3,
+        max_endpointing_delay=2.0,
     )
 
     # Initialize handlers
