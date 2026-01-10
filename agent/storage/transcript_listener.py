@@ -13,11 +13,12 @@ import logging
 import os
 import sys
 from datetime import datetime
-from pathlib import Path
+
+# Add parent directory to path for imports when running as standalone script
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx
 import redis.asyncio as redis_async
-from dotenv import load_dotenv
 
 from constants import (
     TRANSCRIPT_CHANNEL,
@@ -30,9 +31,6 @@ from constants import (
     REDIS_RETRY_BACKOFF,
 )
 
-# Load environment variables
-load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
-
 # Setup logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -42,10 +40,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Redis configuration
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+REDIS_URL = os.getenv("REDIS_URL")
 
 # API configuration
-API_BASE = os.getenv("API_BASE_URL", "http://localhost:3000")
+API_BASE = os.getenv("API_BASE_URL")
 API_INTERNAL_TOKEN = os.getenv("API_INTERNAL_TOKEN")
 
 

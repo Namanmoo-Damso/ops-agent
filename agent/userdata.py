@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agents.elderly_companion import CallDirection
+    from personality.elderly_companion import CallDirection
 
 logger = logging.getLogger(__name__)
 
