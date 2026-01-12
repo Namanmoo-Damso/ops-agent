@@ -167,7 +167,7 @@ async def subscribe_to_greeting(
     try:
         # Subscribe to the greeting channel
         await pubsub.subscribe(channel_name)
-        logger.info(f"📡 Subscribed to greeting channel: {channel_name}")
+        logger.info(f"[greeting] Subscribed to greeting channel: {channel_name}")
         
         # Wait for greeting message with timeout
         try:
@@ -181,7 +181,7 @@ async def subscribe_to_greeting(
                         else:
                             greeting_text = str(raw_data)
 
-                        logger.info(f"✅ Received greeting from channel (ward={ward_id}, length={len(greeting_text)})")
+                        logger.info(f"[greeting] Received greeting from channel (ward={ward_id}, length={len(greeting_text)})")
                         
                         # Invoke callback with greeting
                         await callback(greeting_text)
@@ -189,10 +189,10 @@ async def subscribe_to_greeting(
                         # Unsubscribe after receiving first message
                         break
         except asyncio.TimeoutError:
-            logger.info(f"⏱️  Greeting subscription timed out after {timeout}s (ward={ward_id})")
+            logger.info(f"[greeting] Subscription timed out after {timeout}s (ward={ward_id})")
     
     except Exception as e:
-        logger.error(f"❌ Error in greeting subscription (ward={ward_id}): {e}")
+        logger.error(f"[greeting] Error in greeting subscription (ward={ward_id}): {e}")
     
     finally:
         # Clean up subscription

@@ -47,8 +47,6 @@ class ElderlyCompanionAgent(Agent):
             instructions=self._build_instructions(ward_context, call_direction),
         )
 
-
-
     async def on_enter(self) -> None:
         """
         Called when agent enters the session - uses Push-based greeting approach.
@@ -75,7 +73,7 @@ class ElderlyCompanionAgent(Agent):
             fallback_greeting = GREETING_INBOUND
 
         # 🚀 STEP 1: Immediately say static greeting (zero latency)
-        logger.info(f"💬 Saying static greeting immediately (direction={self.call_direction})")
+        logger.info(f"[greeting] Saying static greeting immediately (direction={self.call_direction})")
         self.session.say(fallback_greeting, allow_interruptions=False)
 
         # 📡 STEP 2: Subscribe to greeting channel (non-blocking, Push-based)
@@ -103,7 +101,7 @@ class ElderlyCompanionAgent(Agent):
             personalized_greeting: Full greeting text from backend RAG service
         """
         try:
-            logger.info(f"🎯 Greeting received via Pub/Sub (length={len(personalized_greeting)})")
+            logger.info(f"[greeting] Received via Pub/Sub (length={len(personalized_greeting)})")
 
             # Determine what static greeting was already said
             if self.call_direction == CallDirection.OUTBOUND:
@@ -113,21 +111,21 @@ class ElderlyCompanionAgent(Agent):
 
             # Skip if it's identical to what we already said (after normalization)
             if self._normalize_greeting(personalized_greeting) == self._normalize_greeting(static_greeting):
-                logger.info("⚠️  Personalized greeting same as static, skipping")
+                logger.info("[greeting] Personalized greeting same as static, skipping")
                 return
 
             # Extract additional content (remove static prefix if present)
             additional_content = self._extract_additional_content(personalized_greeting, static_greeting)
 
             if additional_content:
-                logger.info(f"✨ Adding personalized content: {additional_content[:50]}...")
+                logger.info(f"[greeting] Adding personalized content: {additional_content[:50]}...")
                 # Say the additional personalized content
                 self.session.say(additional_content, allow_interruptions=True)
             else:
-                logger.info("📋 No additional content to add")
+                logger.info("[greeting] No additional content to add")
 
         except Exception as e:
-            logger.error(f"❌ Error processing received greeting: {e}", exc_info=True)
+            logger.error(f"[greeting] Error processing received greeting: {e}", exc_info=True)
 
     def _extract_additional_content(self, full_greeting: str, static_part: str) -> Optional[str]:
         """
@@ -156,8 +154,8 @@ class ElderlyCompanionAgent(Agent):
                     return additional
 
         # Strategy 2: Split by sentence and remove first if it's static greeting
-        # Handle various sentence endings: '. ', '。', '. '
-        for delimiter in ['. ', '。 ', '. ', '.\n']:
+        # Handle various sentence endings including Korean punctuation
+        for delimiter in ['. ', '。 ', '. ', '.\n', '! ', '? ', '！ ', '？ ']:
             if delimiter in full_greeting:
                 sentences = full_greeting.split(delimiter, 1)
                 if len(sentences) >= 2:
@@ -181,11 +179,11 @@ class ElderlyCompanionAgent(Agent):
 
         - Trim whitespace
         - Lowercase
-        - Remove trailing common punctuation
+        - Remove trailing common punctuation (., !, ?, ，, ？, ！, …)
         - Collapse double spaces
         """
         normalized = text.strip().lower()
-        while normalized.endswith(('.', '!', '?')):
+        while normalized.endswith(('.', '!', '?', '，', '？', '！', '…')):
             normalized = normalized[:-1].strip()
         normalized = " ".join(normalized.split())
         return normalized
