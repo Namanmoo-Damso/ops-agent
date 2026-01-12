@@ -152,7 +152,8 @@ class ElderlyCompanionAgent(Agent):
         if full_greeting.startswith(static_part):
             additional = full_greeting[len(static_part):].strip()
             if additional and len(additional) > 5:  # Meaningful content
-                return additional
+                if self._normalize_greeting(additional) != static_part:
+                    return additional
 
         # Strategy 2: Split by sentence and remove first if it's static greeting
         # Handle various sentence endings: '. ', '。', '. '
@@ -165,7 +166,7 @@ class ElderlyCompanionAgent(Agent):
 
                     # If first sentence matches static greeting, use rest
                     if first_sentence == static_part or first_sentence + '.' == static_part:
-                        if rest and len(rest) > 5:
+                        if rest and len(rest) > 5 and self._normalize_greeting(rest) != static_part:
                             return rest
 
         # Strategy 3: If full greeting is completely different, use it

@@ -198,7 +198,9 @@ async def subscribe_to_greeting(
         # Clean up subscription
         try:
             await pubsub.unsubscribe(channel_name)
-            await pubsub.close()
-            logger.debug(f"Unsubscribed from greeting channel: {channel_name}")
-        except Exception as e:
-            logger.error(f"Error closing pubsub connection: {e}")
+        finally:
+            try:
+                await pubsub.close()
+                logger.debug(f"Unsubscribed/closed greeting channel: {channel_name}")
+            except Exception as e:
+                logger.error(f"Error closing pubsub connection: {e}")
