@@ -13,6 +13,7 @@ from constants import (
     TRANSCRIPT_CHANNEL,
     CALL_END_CHANNEL,
     GREETING_CHANNEL_PREFIX,
+    TIMEOUT_GREETING_FETCH,
     REDIS_MAX_RETRIES,
     REDIS_RETRY_DELAY,
     REDIS_RETRY_BACKOFF,
@@ -131,7 +132,11 @@ async def publish_call_end(call_id: str, ward_id: str) -> bool:
         return False
 
 
-async def subscribe_to_greeting(ward_id: str, callback, timeout: float = 5.0) -> None:
+async def subscribe_to_greeting(
+    ward_id: str,
+    callback,
+    timeout: float = TIMEOUT_GREETING_FETCH,
+) -> None:
     """
     Subscribe to greeting channel and invoke callback when greeting arrives.
     
@@ -169,7 +174,13 @@ async def subscribe_to_greeting(ward_id: str, callback, timeout: float = 5.0) ->
             async with asyncio.timeout(timeout):
                 async for message in pubsub.listen():
                     if message["type"] == "message":
-                        greeting_text = message["data"]
+                        raw_data = message["data"]
+                        # Redis can return bytes; normalize to str for TTS
+                        if isinstance(raw_data, bytes):
+                            greeting_text = raw_data.decode("utf-8", errors="ignore")
+                        else:
+                            greeting_text = str(raw_data)
+
                         logger.info(f"✅ Received greeting from channel (ward={ward_id}, length={len(greeting_text)})")
                         
                         # Invoke callback with greeting
@@ -191,4 +202,3 @@ async def subscribe_to_greeting(ward_id: str, callback, timeout: float = 5.0) ->
             logger.debug(f"Unsubscribed from greeting channel: {channel_name}")
         except Exception as e:
             logger.error(f"Error closing pubsub connection: {e}")
-

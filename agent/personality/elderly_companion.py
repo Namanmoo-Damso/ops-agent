@@ -7,7 +7,7 @@ from typing import Annotated, Optional
 from livekit.agents import Agent, RunContext, function_tool
 from pydantic import Field
 
-from constants import TIMEOUT_RAG_SEARCH_QUICK
+from constants import TIMEOUT_RAG_SEARCH_QUICK, TIMEOUT_GREETING_FETCH
 from rag_client import get_shared_rag_client
 from services.redis_pubsub import subscribe_to_greeting
 from userdata import SessionUserdata
@@ -83,7 +83,11 @@ class ElderlyCompanionAgent(Agent):
             ward_id = self.session.userdata.ward_id
             # Launch background task to subscribe and wait for greeting
             asyncio.create_task(
-                subscribe_to_greeting(ward_id, self._on_greeting_received)
+                subscribe_to_greeting(
+                  ward_id,
+                  self._on_greeting_received,
+                  timeout=TIMEOUT_GREETING_FETCH,
+                )
             )
         else:
             logger.warning("Ward ID not available, skipping personalized greeting subscription")
@@ -107,8 +111,8 @@ class ElderlyCompanionAgent(Agent):
             else:
                 static_greeting = GREETING_INBOUND
 
-            # Skip if it's identical to what we already said
-            if personalized_greeting.strip() == static_greeting.strip():
+            # Skip if it's identical to what we already said (after normalization)
+            if self._normalize_greeting(personalized_greeting) == self._normalize_greeting(static_greeting):
                 logger.info("⚠️  Personalized greeting same as static, skipping")
                 return
 
@@ -141,8 +145,8 @@ class ElderlyCompanionAgent(Agent):
         Returns:
             Additional content to say, or None if nothing to add
         """
-        full_greeting = full_greeting.strip()
-        static_part = static_part.strip()
+        full_greeting = self._normalize_greeting(full_greeting)
+        static_part = self._normalize_greeting(static_part)
 
         # Strategy 1: Remove exact static prefix
         if full_greeting.startswith(static_part):
@@ -169,6 +173,21 @@ class ElderlyCompanionAgent(Agent):
             return full_greeting
 
         return None
+
+    def _normalize_greeting(self, text: str) -> str:
+        """
+        Normalize greeting strings for safer comparison.
+
+        - Trim whitespace
+        - Lowercase
+        - Remove trailing common punctuation
+        - Collapse double spaces
+        """
+        normalized = text.strip().lower()
+        while normalized.endswith(('.', '!', '?')):
+            normalized = normalized[:-1].strip()
+        normalized = " ".join(normalized.split())
+        return normalized
 
     def _build_instructions(self, ward_context: str = "", call_direction: str = "inbound") -> str:
         """Build agent instructions with optional context."""
