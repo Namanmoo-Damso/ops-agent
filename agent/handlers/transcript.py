@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import time
 from typing import Set, Callable
 
 from services.redis_pubsub import publish_transcript, store_transcript_direct
@@ -37,7 +38,7 @@ class TranscriptHandler:
                 "type": "transcript",
                 "role": role,
                 "text": text,
-                "timestamp": int(asyncio.get_event_loop().time() * 1000)
+                "timestamp": int(time.time() * 1000)
             })
             await self.room.local_participant.publish_data(
                 payload,
