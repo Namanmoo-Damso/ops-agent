@@ -156,29 +156,30 @@ class CareAlertHandler:
         self.room.on("data_received")(self._on_data_received)
         logger.info("CareAlertHandler registered")
 
-    def _on_data_received(self, packet: rtc.DataPacket, participant: Optional[rtc.Participant] = None, kind: Optional[int] = None) -> None:
-        """Handle incoming data packets."""
-        # packet이 첫 번째 인자가 아닐 수도 있으므로 타입 체크
-        if not isinstance(packet, rtc.DataPacket):
-             # 인자가 다르게 들어온 경우 처리 (e.g. data만 들어옴)
-             logger.warning(f"[CareAlert_DEBUG] Unexpected args: {packet}, {participant}, {kind}")
-             return
+    def _on_data_received(self, packet: rtc.DataPacket) -> None:
+        """Handle incoming data packets.
 
+        Note: data_received event passes single DataPacket argument.
+        participant info is available via packet.participant attribute.
+        """
         if packet.topic != self.TOPIC:
-            logger.info(f"[CareAlert_DEBUG] Ignored packet with topic: {packet.topic} (Expected: {self.TOPIC})")
             return
 
-        logger.info(f"[CareAlert_DEBUG] Received packet with topic: {packet.topic}, data_len={len(packet.data)}, from={participant.identity if participant else 'Unknown'}")
+        participant_id = packet.participant.identity if packet.participant else "Unknown"
+        logger.info(f"[CareAlert] Received {packet.topic}, data_len={len(packet.data)}, from={participant_id}")
 
         try:
-            data = json.loads(packet.data.decode("utf-8"))
+            raw_data = packet.data.decode("utf-8")
+            data = json.loads(raw_data)
             alert = self._parse_alert(data)
             if alert:
                 self._handle_alert(alert)
+            else:
+                logger.warning(f"Invalid care alert data: {raw_data[:200]}")
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse care_alert JSON: {e}")
+            logger.error(f"Failed to parse care_alert JSON: {e}, data={packet.data[:200]}")
         except Exception as e:
-            logger.error(f"Failed to process care_alert: {e}")
+            logger.error(f"Failed to process care_alert: {e}", exc_info=True)
 
     def _parse_alert(self, data: dict) -> Optional[CareAlert]:
         """Parse JSON data into CareAlert."""
@@ -298,10 +299,12 @@ class CareAlertHandler:
             if payload.confidence < 0.7:
                 return None
 
-            # Track emotion changes
+            # Track consecutive same emotion detections
             if payload.emotion != self.last_emotion:
-                self.emotion_change_count += 1
                 self.last_emotion = payload.emotion
+                self.emotion_change_count = 1  # Reset on emotion change
+            else:
+                self.emotion_change_count += 1  # Increment on same emotion
 
             # Only respond to negative emotions after some stability
             if payload.emotion in (
@@ -310,7 +313,7 @@ class CareAlertHandler:
                 EmotionType.ANGRY,
             ):
                 # Respond after 2 consecutive detections of same emotion
-                if self.emotion_change_count <= 1:
+                if self.emotion_change_count >= 2:
                     return self.RESPONSES[AlertType.EMOTION].get(payload.emotion.value)
 
         return None
