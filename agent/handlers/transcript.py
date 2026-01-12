@@ -42,6 +42,7 @@ class TranscriptHandler:
             await self.room.local_participant.publish_data(
                 payload,
                 reliable=True,
+                topic="transcript",
             )
         except Exception as e:
             logger.error(f"Failed to broadcast transcript: {e}")

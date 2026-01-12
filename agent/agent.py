@@ -30,6 +30,7 @@ from services.redis_pubsub import get_redis_client, publish_call_end
 from services.api_client import fetch_call_context, notify_call_end
 from handlers.transcript import TranscriptHandler
 from handlers.takeover import TakeoverHandler
+from handlers.care_alert import CareAlertHandler
 from handlers.session import (
     extract_ward_id,
     get_session_metadata,
@@ -253,7 +254,25 @@ async def entrypoint(ctx: JobContext):
     takeover_handler = TakeoverHandler(ctx.room, session)
     transcript_handler = TranscriptHandler(call_id, ctx.room)
     session_end_handler = SessionEndHandler(call_id, ward_id)
-    
+
+    # === Care Alert Handler ===
+    async def on_care_alert_response(message: str) -> None:
+        """Callback to make agent speak when care alert received."""
+        logger.info(f"[CareAlert] Speaking response: {message[:50]}...")
+        try:
+            await session.say(message, allow_interruptions=False)
+        except Exception as e:
+            logger.error(f"Failed to speak care alert response: {e}")
+
+    care_alert_handler = CareAlertHandler(
+        room=ctx.room,
+        on_alert_response=on_care_alert_response,
+        ward_id=ward_id,
+        call_id=call_id,
+    )
+    care_alert_handler.register()
+    # === Care Alert Handler End ===
+
     # Register session event handlers
     @session.on("user_input_transcribed")
     def on_user_transcript(ev):
