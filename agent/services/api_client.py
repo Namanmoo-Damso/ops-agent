@@ -67,3 +67,75 @@ async def notify_call_end(call_id: str, ward_id: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to notify call end via API: {e}")
         return False
+
+
+async def send_care_alert(
+    ward_id: str,
+    alert_type: str,
+    severity: str,
+    timestamp: int,
+    payload: dict,
+    call_id: Optional[str] = None,
+    room_name: Optional[str] = None,
+    agent_response: Optional[str] = None,
+) -> bool:
+    """
+    Send care alert to backend API.
+
+    Args:
+        ward_id: Ward UUID
+        alert_type: Alert type (device_fall, person_fall, loud_voice, emotion)
+        severity: Severity level (low, medium, high, critical)
+        timestamp: Event timestamp from iOS (Unix ms)
+        payload: Raw payload data from iOS
+        call_id: Optional call UUID for correlation
+        room_name: Optional LiveKit room name
+        agent_response: Optional agent response message
+
+    Returns:
+        True if sent successfully, False otherwise
+    """
+    if not API_BASE:
+        logger.error("API_BASE_URL not configured")
+        return False
+
+    # Build request body matching CreateCareAlertDto
+    request_body = {
+        "timestamp": timestamp,
+        "alertType": alert_type,
+        "severity": severity,
+        "data": {
+            "type": alert_type,
+            "payload": payload,
+        },
+        "source": "agent",
+    }
+
+    # Add optional agent correlation fields
+    if call_id:
+        request_body["callId"] = call_id
+    if room_name:
+        request_body["roomName"] = room_name
+    if agent_response:
+        request_body["agentResponse"] = agent_response
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{API_BASE}/v1/care-alerts",
+                json=request_body,
+                headers={
+                    **get_auth_headers(),
+                    "X-Ward-Id": ward_id,  # Ward ID in header for auth
+                },
+                timeout=5.0,
+            )
+            response.raise_for_status()
+            logger.info(f"Care alert sent via API: ward={ward_id} type={alert_type} call={call_id}")
+            return True
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Care alert API error: status={e.response.status_code}")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to send care alert via API: {e}")
+        return False
