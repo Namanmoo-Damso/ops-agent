@@ -12,6 +12,7 @@ from config import validate_env_vars
 from constants import (
     TRANSCRIPT_CHANNEL,
     CALL_END_CHANNEL,
+    GREETING_CHANNEL_PREFIX,
     REDIS_MAX_RETRIES,
     REDIS_RETRY_DELAY,
     REDIS_RETRY_BACKOFF,
@@ -128,3 +129,66 @@ async def publish_call_end(call_id: str, ward_id: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to publish call_end to Redis: {e}")
         return False
+
+
+async def subscribe_to_greeting(ward_id: str, callback, timeout: float = 5.0) -> None:
+    """
+    Subscribe to greeting channel and invoke callback when greeting arrives.
+    
+    This implements a Push-based approach where the agent subscribes to a Redis
+    channel and receives the personalized greeting when the backend publishes it.
+    
+    Channel: greeting:ward:{wardId}
+    
+    Args:
+        ward_id: Ward UUID
+        callback: Async function to call with greeting text when received
+        timeout: Maximum time to wait for greeting (default: 5 seconds)
+    
+    Flow:
+        1. Subscribe to greeting:ward:{wardId}
+        2. Wait for message (with timeout)
+        3. When message arrives, invoke callback with greeting text
+        4. Auto-unsubscribe after first message or timeout
+    """
+    client = await get_redis_client()
+    if not client:
+        logger.warning(f"Redis client unavailable for greeting subscription (ward={ward_id})")
+        return
+
+    channel_name = f"{GREETING_CHANNEL_PREFIX}{ward_id}"
+    pubsub = client.pubsub()
+    
+    try:
+        # Subscribe to the greeting channel
+        await pubsub.subscribe(channel_name)
+        logger.info(f"📡 Subscribed to greeting channel: {channel_name}")
+        
+        # Wait for greeting message with timeout
+        try:
+            async with asyncio.timeout(timeout):
+                async for message in pubsub.listen():
+                    if message["type"] == "message":
+                        greeting_text = message["data"]
+                        logger.info(f"✅ Received greeting from channel (ward={ward_id}, length={len(greeting_text)})")
+                        
+                        # Invoke callback with greeting
+                        await callback(greeting_text)
+                        
+                        # Unsubscribe after receiving first message
+                        break
+        except asyncio.TimeoutError:
+            logger.info(f"⏱️  Greeting subscription timed out after {timeout}s (ward={ward_id})")
+    
+    except Exception as e:
+        logger.error(f"❌ Error in greeting subscription (ward={ward_id}): {e}")
+    
+    finally:
+        # Clean up subscription
+        try:
+            await pubsub.unsubscribe(channel_name)
+            await pubsub.close()
+            logger.debug(f"Unsubscribed from greeting channel: {channel_name}")
+        except Exception as e:
+            logger.error(f"Error closing pubsub connection: {e}")
+

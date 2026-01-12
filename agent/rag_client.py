@@ -189,6 +189,48 @@ class RagClient:
             logger.error(f"Unexpected error getting context: {e}", exc_info=True)
             return []
 
+    async def preload_weekly_context(
+        self,
+        ward_id: str,
+        call_direction: str = "inbound",
+    ) -> bool:
+        """
+        Preload weekly context into Redis cache before call starts
+
+        This should be called when participants join the room (before first greeting)
+        to ensure fast RAG searches during the conversation.
+
+        Args:
+            ward_id: Ward UUID
+            call_direction: Call direction ("inbound" or "outbound")
+
+        Returns:
+            True if preload started successfully, False otherwise
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_base}/v1/rag/preload",
+                    json={"wardId": ward_id, "callDirection": call_direction},
+                    headers=self._get_headers(),
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                logger.info(f"✅ Weekly context preload started for ward={ward_id}, direction={call_direction}")
+                return True
+        except httpx.TimeoutException:
+            logger.warning(f"⚠️  Preload timed out after {self.timeout}s for ward={ward_id}")
+            return False
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ Preload HTTP error {e.response.status_code}: {e}")
+            return False
+        except httpx.HTTPError as e:
+            logger.error(f"❌ Preload network error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Unexpected error during preload: {e}", exc_info=True)
+            return False
+
     async def build_context_prompt(
         self,
         ward_id: str,

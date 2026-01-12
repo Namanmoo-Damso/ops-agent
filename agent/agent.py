@@ -176,6 +176,25 @@ async def entrypoint(ctx: JobContext):
 
     logger.info(f"Session info: ward_id={ward_id}, call_id={call_id}, direction={call_direction}")
 
+    # 🚀 START PRELOAD IMMEDIATELY - Parallel with WebRTC handshake
+    # This loads weekly vectors from PGVector → Redis cache BEFORE agent joins
+    # By the time first greeting happens, cache is ready (fast searches)
+    if ward_id:
+        logger.info(f"🚀 Starting weekly context preload in background for ward: {ward_id}")
+        rag_client = get_shared_rag_client()
+        # Convert CallDirection enum to string for API
+        direction_str = "outbound" if call_direction == CallDirection.OUTBOUND else "inbound"
+        asyncio.create_task(rag_client.preload_weekly_context(ward_id, direction_str))
+
+    # Wait for user participant to join
+    logger.info("Waiting for user participant to join...")
+    user_participant_identity = await wait_for_participant(ctx, timeout=30.0)
+
+    if user_participant_identity:
+        logger.info(f"✅ User participant joined: {user_participant_identity}")
+    else:
+        logger.warning("⚠️  User participant did not join within timeout")
+
     # Load conversation context in background with timeout
     # IMPORTANT: Don't block session start - RAG is optional enhancement
     # If RAG is slow/unavailable, agent still starts and greets user
