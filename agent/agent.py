@@ -69,6 +69,24 @@ logger = logging.getLogger(__name__)
 server = AgentServer()
 
 
+def _create_task_logged(coro, name: str):
+    """
+    Create a background task and log exceptions to avoid silent failures.
+    """
+    task = asyncio.create_task(coro, name=name)
+
+    def _log_error(t: asyncio.Task):
+        try:
+            exc = t.exception()
+            if exc:
+                logger.error(f"Background task '{name}' failed: {exc}", exc_info=True)
+        except asyncio.CancelledError:
+            pass
+
+    task.add_done_callback(_log_error)
+    return task
+
+
 def prewarm(proc: JobProcess):
     """Prewarm function - loads models shared across sessions."""
     try:
@@ -176,6 +194,28 @@ async def entrypoint(ctx: JobContext):
 
     logger.info(f"Session info: ward_id={ward_id}, call_id={call_id}, direction={call_direction}")
 
+    # 🚀 START PRELOAD IMMEDIATELY - Parallel with WebRTC handshake
+    # This loads weekly vectors from PGVector → Redis cache BEFORE agent joins
+    # By the time first greeting happens, cache is ready (fast searches)
+    if ward_id:
+        logger.info(f"🚀 Starting weekly context preload in background for ward: {ward_id}")
+        rag_client = get_shared_rag_client()
+        # Convert CallDirection enum to string for API
+        direction_str = "outbound" if call_direction == CallDirection.OUTBOUND else "inbound"
+        _create_task_logged(
+            rag_client.preload_weekly_context(ward_id, direction_str),
+            name="preload_weekly_context",
+        )
+
+    # Wait for user participant to join
+    logger.info("Waiting for user participant to join...")
+    user_participant_identity = await wait_for_participant(ctx, timeout=30.0)
+
+    if user_participant_identity:
+        logger.info(f"✅ User participant joined: {user_participant_identity}")
+    else:
+        logger.warning("⚠️  User participant did not join within timeout")
+
     # Load conversation context in background with timeout
     # IMPORTANT: Don't block session start - RAG is optional enhancement
     # If RAG is slow/unavailable, agent still starts and greets user
@@ -269,7 +309,10 @@ async def entrypoint(ctx: JobContext):
     )
 
     # Start takeover polling in background
-    takeover_task = asyncio.create_task(takeover_handler.start_polling())
+    takeover_task = _create_task_logged(
+        takeover_handler.start_polling(),
+        name="takeover_polling",
+    )
 
     # Start session (this blocks until session ends)
     await session.start(

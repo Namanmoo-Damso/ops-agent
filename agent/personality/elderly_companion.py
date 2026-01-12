@@ -1,13 +1,15 @@
 """Elderly Companion Agent - 어르신 돌봄 AI 에이전트."""
+import asyncio
 import logging
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Optional
 
 from livekit.agents import Agent, RunContext, function_tool
 from pydantic import Field
 
-from constants import TIMEOUT_RAG_SEARCH_QUICK
+from constants import TIMEOUT_RAG_SEARCH_QUICK, TIMEOUT_GREETING_FETCH
 from rag_client import get_shared_rag_client
+from services.redis_pubsub import subscribe_to_greeting
 from userdata import SessionUserdata
 
 logger = logging.getLogger(__name__)
@@ -46,7 +48,17 @@ class ElderlyCompanionAgent(Agent):
         )
 
     async def on_enter(self) -> None:
-        """Called when agent enters the session - greets based on call direction."""
+        """
+        Called when agent enters the session - uses Push-based greeting approach.
+
+        Push-based greeting strategy:
+        1. Immediately say static greeting ("안녕하세요, 어르신" or "여보세요. 소담입니다")
+        2. Subscribe to Redis Pub/Sub channel: greeting:ward:{wardId}
+        3. When backend publishes personalized greeting, receive and say it
+
+        This ensures zero-latency first response while receiving RAG-enhanced greeting
+        when the backend is ready.
+        """
         logger.info(f"ElderlyCompanionAgent entering with direction={self.call_direction}")
 
         # Check if session is initialized
@@ -54,13 +66,127 @@ class ElderlyCompanionAgent(Agent):
             logger.error("Session not initialized in on_enter")
             return
 
-        # Use different greetings based on call direction
+        # Determine static greeting based on call direction
         if self.call_direction == CallDirection.OUTBOUND:
-            greeting = GREETING_OUTBOUND
+            fallback_greeting = GREETING_OUTBOUND
         else:
-            greeting = GREETING_INBOUND
+            fallback_greeting = GREETING_INBOUND
 
-        self.session.say(greeting, allow_interruptions=False)
+        # 🚀 STEP 1: Immediately say static greeting (zero latency)
+        logger.info(f"[greeting] Saying static greeting immediately (direction={self.call_direction})")
+        self.session.say(fallback_greeting, allow_interruptions=False)
+
+        # 📡 STEP 2: Subscribe to greeting channel (non-blocking, Push-based)
+        if hasattr(self.session, 'userdata') and hasattr(self.session.userdata, 'ward_id'):
+            ward_id = self.session.userdata.ward_id
+            # Launch background task to subscribe and wait for greeting
+            asyncio.create_task(
+                subscribe_to_greeting(
+                  ward_id,
+                  self._on_greeting_received,
+                  timeout=TIMEOUT_GREETING_FETCH,
+                )
+            )
+        else:
+            logger.warning("Ward ID not available, skipping personalized greeting subscription")
+
+    async def _on_greeting_received(self, personalized_greeting: str) -> None:
+        """
+        Callback invoked when personalized greeting is received via Redis Pub/Sub.
+
+        This is called by the subscription when the backend publishes a greeting
+        to the channel: greeting:ward:{wardId}
+
+        Args:
+            personalized_greeting: Full greeting text from backend RAG service
+        """
+        try:
+            logger.info(f"[greeting] Received via Pub/Sub (length={len(personalized_greeting)})")
+
+            # Determine what static greeting was already said
+            if self.call_direction == CallDirection.OUTBOUND:
+                static_greeting = GREETING_OUTBOUND
+            else:
+                static_greeting = GREETING_INBOUND
+
+            # Skip if it's identical to what we already said (after normalization)
+            if self._normalize_greeting(personalized_greeting) == self._normalize_greeting(static_greeting):
+                logger.info("[greeting] Personalized greeting same as static, skipping")
+                return
+
+            # Extract additional content (remove static prefix if present)
+            additional_content = self._extract_additional_content(personalized_greeting, static_greeting)
+
+            if additional_content:
+                logger.info(f"[greeting] Adding personalized content: {additional_content[:50]}...")
+                # Say the additional personalized content
+                self.session.say(additional_content, allow_interruptions=True)
+            else:
+                logger.info("[greeting] No additional content to add")
+
+        except Exception as e:
+            logger.error(f"[greeting] Error processing received greeting: {e}", exc_info=True)
+
+    def _extract_additional_content(self, full_greeting: str, static_part: str) -> Optional[str]:
+        """
+        Extract additional personalized content from full greeting.
+
+        Tries multiple strategies:
+        1. Remove exact static prefix
+        2. Remove first sentence if it matches static greeting
+        3. Return entire greeting if different from static
+
+        Args:
+            full_greeting: Complete greeting from RAG
+            static_part: Static greeting prefix to remove
+
+        Returns:
+            Additional content to say, or None if nothing to add
+        """
+        full_greeting = self._normalize_greeting(full_greeting)
+        static_part = self._normalize_greeting(static_part)
+
+        # Strategy 1: Remove exact static prefix
+        if full_greeting.startswith(static_part):
+            additional = full_greeting[len(static_part):].strip()
+            if additional and len(additional) > 5:  # Meaningful content
+                if self._normalize_greeting(additional) != static_part:
+                    return additional
+
+        # Strategy 2: Split by sentence and remove first if it's static greeting
+        # Handle various sentence endings including Korean punctuation
+        for delimiter in ['. ', '。 ', '. ', '.\n', '! ', '? ', '！ ', '？ ']:
+            if delimiter in full_greeting:
+                sentences = full_greeting.split(delimiter, 1)
+                if len(sentences) >= 2:
+                    first_sentence = sentences[0].strip()
+                    rest = sentences[1].strip()
+
+                    # If first sentence matches static greeting, use rest
+                    if first_sentence == static_part or first_sentence + '.' == static_part:
+                        if rest and len(rest) > 5 and self._normalize_greeting(rest) != static_part:
+                            return rest
+
+        # Strategy 3: If full greeting is completely different, use it
+        if full_greeting != static_part and len(full_greeting) > len(static_part) + 10:
+            return full_greeting
+
+        return None
+
+    def _normalize_greeting(self, text: str) -> str:
+        """
+        Normalize greeting strings for safer comparison.
+
+        - Trim whitespace
+        - Lowercase
+        - Remove trailing common punctuation (., !, ?, ，, ？, ！, …)
+        - Collapse double spaces
+        """
+        normalized = text.strip().lower()
+        while normalized.endswith(('.', '!', '?', '，', '？', '！', '…')):
+            normalized = normalized[:-1].strip()
+        normalized = " ".join(normalized.split())
+        return normalized
 
     def _build_instructions(self, ward_context: str = "", call_direction: str = "inbound") -> str:
         """Build agent instructions with optional context."""
