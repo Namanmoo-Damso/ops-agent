@@ -195,18 +195,9 @@ async def entrypoint(ctx: JobContext):
 
     logger.info(f"Session info: ward_id={ward_id}, call_id={call_id}, direction={call_direction}")
 
-    # 🚀 START PRELOAD IMMEDIATELY - Parallel with WebRTC handshake
-    # This loads weekly vectors from PGVector → Redis cache BEFORE agent joins
-    # By the time first greeting happens, cache is ready (fast searches)
-    if ward_id:
-        logger.info(f"🚀 Starting weekly context preload in background for ward: {ward_id}")
-        rag_client = get_shared_rag_client()
-        # Convert CallDirection enum to string for API
-        direction_str = "outbound" if call_direction == CallDirection.OUTBOUND else "inbound"
-        _create_task_logged(
-            rag_client.preload_weekly_context(ward_id, direction_str),
-            name="preload_weekly_context",
-        )
+    # Note: Greeting pre-warm now happens in backend when user requests token
+    # See: ops-api/src/rtc/rtc-token.service.ts (generatePersonalizedGreeting)
+    # This ensures greeting is ready BEFORE agent even enters the room
 
     # Wait for user participant to join
     logger.info("Waiting for user participant to join...")

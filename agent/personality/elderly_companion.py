@@ -5,18 +5,20 @@ import time
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Optional
-from zoneinfo import ZoneInfo
 
 from livekit.agents import Agent, RunContext, function_tool
 from pydantic import Field
 
 from constants import (
-    AGENT_TIMEZONE,
-    MEMORY_SIMILARITY_THRESHOLD,
+    AGENT_TZINFO,
     TIMEOUT_GREETING_FETCH,
     TIMEOUT_RAG_SEARCH_QUICK,
 )
-from rag_client import format_relative_time_ko, get_shared_rag_client
+from rag_client import (
+    extract_result_text,
+    extract_result_time_label,
+    get_shared_rag_client,
+)
 from services.redis_pubsub import subscribe_to_greeting
 from userdata import SessionUserdata
 
@@ -80,40 +82,105 @@ class ElderlyCompanionAgent(Agent):
         else:
             fallback_greeting = GREETING_INBOUND
 
-        # 🚀 STEP 1: Immediately say static greeting (zero latency)
-        logger.info(f"[greeting] Saying static greeting immediately (direction={self.call_direction})")
-        self.session.say(fallback_greeting, allow_interruptions=False)
-
-        # 📡 STEP 2: Subscribe to greeting channel (non-blocking, Push-based)
+        # 📡 Hybrid Pull/Push approach for personalized greeting
         if hasattr(self.session, 'userdata') and hasattr(self.session.userdata, 'ward_id'):
             ward_id = self.session.userdata.ward_id
             logger.info(
-                f"[greeting] Waiting up to {TIMEOUT_GREETING_FETCH}s for personalized greeting (ward={ward_id})"
+                f"[greeting] Checking for personalized greeting (ward={ward_id})"
             )
 
             greeting_received = asyncio.Event()
             start_time = time.monotonic()
 
-            async def on_greeting_with_timing(personalized_greeting: str) -> None:
+            async def on_greeting_cached(personalized_greeting: str) -> None:
+                """Called when greeting is found in cache (immediate)"""
                 elapsed = time.monotonic() - start_time
                 logger.info(
-                    f"[greeting] Personalized greeting received after {elapsed:.2f}s (ward={ward_id})"
+                    f"[greeting] Personalized greeting received from cache after {elapsed:.2f}s (ward={ward_id})"
                 )
                 greeting_received.set()
+                # Say the full cached greeting immediately
+                logger.info(f"[greeting] Using cached greeting in full: {personalized_greeting[:50]}...")
+                self.session.say(personalized_greeting, allow_interruptions=False)
+
+            async def on_greeting_pubsub(personalized_greeting: str) -> None:
+                """Called when greeting arrives via Pub/Sub (delayed)"""
+                elapsed = time.monotonic() - start_time
+                logger.info(
+                    f"[greeting] Personalized greeting received from Pub/Sub after {elapsed:.2f}s (ward={ward_id})"
+                )
+                greeting_received.set()
+                # Process as before - extract additional content
                 await self._on_greeting_received(personalized_greeting)
 
+            # Try to get greeting (subscribe_to_greeting will check cache first)
             asyncio.create_task(
                 self._log_greeting_timeout(greeting_received, start_time, ward_id)
             )
             asyncio.create_task(
-                subscribe_to_greeting(
+                self._fetch_greeting_hybrid(
                     ward_id,
-                    on_greeting_with_timing,
-                    timeout=TIMEOUT_GREETING_FETCH,
+                    fallback_greeting,
+                    on_greeting_cached,
+                    on_greeting_pubsub,
                 )
             )
         else:
-            logger.warning("Ward ID not available, skipping personalized greeting subscription")
+            # No ward_id, just say static greeting
+            logger.warning("Ward ID not available, using static greeting only")
+            self.session.say(fallback_greeting, allow_interruptions=False)
+
+    async def _fetch_greeting_hybrid(
+        self,
+        ward_id: str,
+        fallback_greeting: str,
+        on_cached,
+        on_pubsub,
+    ) -> None:
+        """
+        Fetch greeting using hybrid Pull/Push approach.
+
+        This method wraps subscribe_to_greeting to handle the two different callbacks:
+        - on_cached: Called if greeting is found in cache (immediate)
+        - on_pubsub: Called if greeting arrives via Pub/Sub (after static greeting)
+        """
+        from services.redis_pubsub import get_redis_client
+
+        try:
+            client = await get_redis_client()
+        except Exception as e:
+            logger.error(f"[greeting] Redis client init failed: {e}")
+            self.session.say(fallback_greeting, allow_interruptions=False)
+            return
+        if not client:
+            logger.warning(f"[greeting] Redis unavailable, using static greeting")
+            self.session.say(fallback_greeting, allow_interruptions=False)
+            return
+
+        # Check cache first
+        cache_key = f"rag:greeting:ward:{ward_id}"
+        try:
+            cached_greeting = await client.get(cache_key)
+            if cached_greeting:
+                # Cache hit - use full greeting immediately
+                await on_cached(cached_greeting)
+                return
+        except Exception as e:
+            logger.error(f"[greeting] Error checking cache: {e}")
+
+        # Cache miss - say static greeting first, then wait for Pub/Sub
+        logger.info(f"[greeting] No cached greeting, saying static greeting first")
+        try:
+            self.session.say(fallback_greeting, allow_interruptions=False)
+        except Exception as e:
+            logger.error(f"[greeting] Failed to deliver static greeting: {e}")
+
+        # Now subscribe for Pub/Sub updates
+        await subscribe_to_greeting(
+            ward_id,
+            on_pubsub,
+            timeout=TIMEOUT_GREETING_FETCH,
+        )
 
     async def _on_greeting_received(self, personalized_greeting: str) -> None:
         """
@@ -215,7 +282,7 @@ class ElderlyCompanionAgent(Agent):
 
     def _build_instructions(self, ward_context: str = "", call_direction: str = "inbound") -> str:
         """Build agent instructions with optional context and current time."""
-        tz = ZoneInfo(AGENT_TIMEZONE)
+        tz = AGENT_TZINFO
         local_now = datetime.now(tz)
         current_time_kst = local_now.strftime("%Y년 %m월 %d일 %H시 %M분")
         current_date_kst = local_now.strftime("%Y년 %m월 %d일")
@@ -298,22 +365,24 @@ class ElderlyCompanionAgent(Agent):
         ],
     ) -> str:
         """
-        어르신과의 과거 대화 기록을 검색합니다.
+        어르신과의 과거 대화 기록을 검색합니다 (Parent-Child 구조 활용).
 
         어르신이 이전에 언급한 내용(가족 이름, 건강 상태, 취미, 과거 이야기 등)을
         기억해서 자연스럽게 대화해야 할 때 사용합니다.
+
+        Parent-Child 구조를 통해 더 넓은 문맥을 제공하면서도 관련성 높은 부분을 강조합니다.
 
         Args:
             context: Run context with session userdata
             query: Search query (e.g., '손자', '병원', '약')
 
         Returns:
-            Retrieved memory context or message if not found
+            Retrieved memory context with parent context or message if not found
         """
         rag_client = get_shared_rag_client(timeout=TIMEOUT_RAG_SEARCH_QUICK)
         ward_id = context.userdata.ward_id
 
-        logger.info(f"RAG search: ward={ward_id}, query={query}")
+        logger.info(f"RAG search (Parent-Child): ward={ward_id}, query={query}")
 
         try:
             results = await rag_client.search_similar(
@@ -325,16 +394,14 @@ class ElderlyCompanionAgent(Agent):
             if not results:
                 return "관련된 과거 대화가 없습니다."
 
-            # Format results into context with temporal information
+            # Format results into context with parent context and temporal information
             context_parts = []
             for result in results:
-                text = result.get("text", "")
-                similarity = result.get("similarity", 0)
-                created_at = result.get("createdAt", "")
+                text = extract_result_text(result)
+                relative_time = extract_result_time_label(result)
 
-                # Only include results with reasonable similarity
-                if similarity >= MEMORY_SIMILARITY_THRESHOLD and text:
-                    relative_time = format_relative_time_ko(created_at)
+                # API already filtered by SIMILARITY_THRESHOLD, so trust all returned results
+                if text:
                     if relative_time:
                         context_parts.append(f"{text}\n[경과: {relative_time}]")
                     else:

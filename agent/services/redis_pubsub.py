@@ -8,7 +8,7 @@ from typing import Optional
 import redis
 import redis.asyncio as redis_async
 
-from config import validate_env_vars
+from config import ConfigError, validate_env_vars
 from constants import (
     TRANSCRIPT_CHANNEL,
     CALL_END_CHANNEL,
@@ -37,7 +37,11 @@ async def get_redis_client() -> Optional[redis_async.Redis]:
         if _redis_client:
             return _redis_client
 
-        env_config = validate_env_vars()
+        try:
+            env_config = validate_env_vars()
+        except ConfigError as e:
+            logger.error(f"Redis env validation failed: {e}")
+            return None
 
         for attempt in range(REDIS_MAX_RETRIES):
             try:
@@ -138,18 +142,18 @@ async def subscribe_to_greeting(
     timeout: float = TIMEOUT_GREETING_FETCH,
 ) -> None:
     """
-    Subscribe to greeting channel and invoke callback when greeting arrives.
-    
-    This implements a Push-based approach where the agent subscribes to a Redis
-    channel and receives the personalized greeting when the backend publishes it.
-    
+    Subscribe to greeting channel and invoke callback when greeting arrives via Pub/Sub.
+
+    This is the Push-based part of the greeting delivery system.
+    The caller should check cache first before calling this function.
+
     Channel: greeting:ward:{wardId}
-    
+
     Args:
         ward_id: Ward UUID
         callback: Async function to call with greeting text when received
         timeout: Maximum time to wait for greeting (default: 5 seconds)
-    
+
     Flow:
         1. Subscribe to greeting:ward:{wardId}
         2. Wait for message (with timeout)
