@@ -119,7 +119,7 @@ class CareAlertHandler:
             AlertSeverity.HIGH: "어르신, 괜찮으세요? 무슨 일이 있으신 건 아닌가요?",
         },
         AlertType.PERSON_FALL: {
-            AlertSeverity.CRITICAL: "어르신! 괜찮으세요?! 넘어지신 건 아닌가요? 대답해 주세요!",
+            AlertSeverity.CRITICAL: "어르신! 괜찮으세요?! 혹시 무슨 일 있으세요?",
         },
         AlertType.LOUD_VOICE: {
             AlertSeverity.HIGH: "어르신, 무슨 일이세요? 괜찮으신가요?",
