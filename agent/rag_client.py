@@ -4,17 +4,83 @@ RAG Client for Python Agent
 Provides utilities to search conversation history and get relevant context
 from PGVector storage (Bedrock Titan Embeddings V2 - 1024 dimensions)
 """
-import os
 import logging
+import os
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
+from zoneinfo import ZoneInfo
 import httpx
 
 from constants import (
+    AGENT_TIMEZONE,
     TIMEOUT_CALL_CONTEXT,
 )
 
 logger = logging.getLogger(__name__)
 _shared_rag_client: Optional["RagClient"] = None
+
+
+def _parse_iso_datetime(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        normalized = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _format_months_ago(months: int) -> str:
+    if months == 1:
+        return "한 달 전"
+    if months == 2:
+        return "두 달 전"
+    return f"{months}개월 전"
+
+
+def format_relative_time_ko(
+    iso_timestamp: str,
+    now: Optional[datetime] = None,
+) -> Optional[str]:
+    dt = _parse_iso_datetime(iso_timestamp)
+    if not dt:
+        return None
+
+    try:
+        tz = ZoneInfo(AGENT_TIMEZONE)
+    except Exception:
+        tz = timezone.utc
+
+    dt_local = dt.astimezone(tz)
+    now_local = now.astimezone(tz) if now else datetime.now(tz)
+
+    if now_local < dt_local:
+        return "방금 전"
+
+    diff = now_local - dt_local
+    diff_seconds = int(diff.total_seconds())
+    diff_hours = diff_seconds // 3600
+    diff_days = diff_seconds // 86400
+
+    if diff_hours < 1:
+        return "방금 전"
+    if diff_hours < 24:
+        return f"{diff_hours}시간 전"
+    if diff_days == 1:
+        return "어제"
+    if diff_days < 7:
+        return f"{diff_days}일 전"
+    if diff_days < 14:
+        return "지난주"
+    if diff_days < 60:
+        weeks = diff_days // 7
+        return f"{weeks}주 전"
+
+    months = diff_days // 30
+    return _format_months_ago(months)
 
 
 class RagClient:
@@ -241,7 +307,7 @@ class RagClient:
         """
         Build a context-aware prompt by combining relevant past conversations
         
-        Now includes temporal context with KST timestamps for better time awareness
+        Now includes relative time hints in Asia/Seoul timezone for better time awareness
 
         Args:
             ward_id: Ward UUID
@@ -269,12 +335,14 @@ class RagClient:
                     # Safe access: skip if text missing (avoid KeyError)
                     text = result.get("text", "")
                     created_at = result.get("createdAt", "")
+                    relative_time = format_relative_time_ko(created_at)
                     
                     if text:  # Only add if text exists
-                        # Format: [{timestamp}] {text}
-                        # Note: text already contains [날짜: ...] prefix from backend
+                        time_label = (
+                            f" · {relative_time}" if relative_time else ""
+                        )
                         context_parts.append(
-                            f"\n[관련도 {similarity_pct}%]\n{text}\n"
+                            f"\n[관련도 {similarity_pct}%{time_label}]\n{text}\n"
                         )
 
             # Add recent context with timestamps
