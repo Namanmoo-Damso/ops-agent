@@ -1,14 +1,22 @@
 """Elderly Companion Agent - 어르신 돌봄 AI 에이전트."""
 import asyncio
 import logging
+import time
+from datetime import datetime
 from enum import Enum
 from typing import Annotated, Optional
+from zoneinfo import ZoneInfo
 
 from livekit.agents import Agent, RunContext, function_tool
 from pydantic import Field
 
-from constants import TIMEOUT_RAG_SEARCH_QUICK, TIMEOUT_GREETING_FETCH
-from rag_client import get_shared_rag_client
+from constants import (
+    AGENT_TIMEZONE,
+    MEMORY_SIMILARITY_THRESHOLD,
+    TIMEOUT_GREETING_FETCH,
+    TIMEOUT_RAG_SEARCH_QUICK,
+)
+from rag_client import format_relative_time_ko, get_shared_rag_client
 from services.redis_pubsub import subscribe_to_greeting
 from userdata import SessionUserdata
 
@@ -79,12 +87,29 @@ class ElderlyCompanionAgent(Agent):
         # 📡 STEP 2: Subscribe to greeting channel (non-blocking, Push-based)
         if hasattr(self.session, 'userdata') and hasattr(self.session.userdata, 'ward_id'):
             ward_id = self.session.userdata.ward_id
-            # Launch background task to subscribe and wait for greeting
+            logger.info(
+                f"[greeting] Waiting up to {TIMEOUT_GREETING_FETCH}s for personalized greeting (ward={ward_id})"
+            )
+
+            greeting_received = asyncio.Event()
+            start_time = time.monotonic()
+
+            async def on_greeting_with_timing(personalized_greeting: str) -> None:
+                elapsed = time.monotonic() - start_time
+                logger.info(
+                    f"[greeting] Personalized greeting received after {elapsed:.2f}s (ward={ward_id})"
+                )
+                greeting_received.set()
+                await self._on_greeting_received(personalized_greeting)
+
+            asyncio.create_task(
+                self._log_greeting_timeout(greeting_received, start_time, ward_id)
+            )
             asyncio.create_task(
                 subscribe_to_greeting(
-                  ward_id,
-                  self._on_greeting_received,
-                  timeout=TIMEOUT_GREETING_FETCH,
+                    ward_id,
+                    on_greeting_with_timing,
+                    timeout=TIMEOUT_GREETING_FETCH,
                 )
             )
         else:
@@ -189,10 +214,18 @@ class ElderlyCompanionAgent(Agent):
         return normalized
 
     def _build_instructions(self, ward_context: str = "", call_direction: str = "inbound") -> str:
-        """Build agent instructions with optional context."""
+        """Build agent instructions with optional context and current time."""
+        tz = ZoneInfo(AGENT_TIMEZONE)
+        local_now = datetime.now(tz)
+        current_time_kst = local_now.strftime("%Y년 %m월 %d일 %H시 %M분")
+        current_date_kst = local_now.strftime("%Y년 %m월 %d일")
+        
         base = (
             "You are a warm, caring AI companion for elderly Korean users.\n"
             "Your name is '소담' (Sodam).\n\n"
+            f"# 현재 시각 (한국 시간)\n"
+            f"- 지금은 {current_time_kst} (KST) 입니다\n"
+            f"- 오늘 날짜: {current_date_kst}\n\n"
             "# CRITICAL RULE: Language\n"
             "- User speaks: Korean (한국어)\n"
             "- You MUST respond: ONLY in Korean (한국어) using respectful 존댓말\n"
@@ -202,9 +235,12 @@ class ElderlyCompanionAgent(Agent):
         )
 
         memory_instruction = (
-            "# Memory Usage\n"
+            "# Memory Usage & Temporal Awareness\n"
             "- When the user mentions family, health, past events, or personal topics, "
             "use the search_memory tool to recall previous conversations\n"
+            "- Retrieved memories include date labels like '[날짜: 2026-01-12 14:30 KST]'\n"
+            "- When available, a relative time hint like '[경과: 3일 전]' is provided; "
+            "use it naturally (e.g., '어제 말씀하신 손자분...', '지난주에 병원 가셨다고 하셨죠?')\n"
             "- Use retrieved memories naturally without explicitly saying '기억을 검색했습니다'\n"
             "- If no relevant memory found, continue conversation naturally\n\n"
         )
@@ -289,15 +325,20 @@ class ElderlyCompanionAgent(Agent):
             if not results:
                 return "관련된 과거 대화가 없습니다."
 
-            # Format results into context
+            # Format results into context with temporal information
             context_parts = []
             for result in results:
                 text = result.get("text", "")
                 similarity = result.get("similarity", 0)
+                created_at = result.get("createdAt", "")
 
-                # Only include results with reasonable similarity (>0.5)
-                if similarity > 0.5 and text:
-                    context_parts.append(text)
+                # Only include results with reasonable similarity
+                if similarity >= MEMORY_SIMILARITY_THRESHOLD and text:
+                    relative_time = format_relative_time_ko(created_at)
+                    if relative_time:
+                        context_parts.append(f"{text}\n[경과: {relative_time}]")
+                    else:
+                        context_parts.append(text)
 
             if not context_parts:
                 return "관련된 과거 대화가 없습니다."
@@ -308,3 +349,18 @@ class ElderlyCompanionAgent(Agent):
         except Exception as e:
             logger.error(f"RAG search error: {e}")
             return "기억 검색 중 오류가 발생했습니다."
+
+    async def _log_greeting_timeout(
+        self,
+        greeting_received: asyncio.Event,
+        start_time: float,
+        ward_id: str,
+    ) -> None:
+        await asyncio.sleep(TIMEOUT_GREETING_FETCH)
+        if greeting_received.is_set():
+            return
+        elapsed = time.monotonic() - start_time
+        logger.warning(
+            f"[greeting] No personalized greeting within {elapsed:.2f}s (ward={ward_id}); "
+            "using static greeting only"
+        )

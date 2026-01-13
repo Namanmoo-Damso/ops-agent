@@ -4,17 +4,83 @@ RAG Client for Python Agent
 Provides utilities to search conversation history and get relevant context
 from PGVector storage (Bedrock Titan Embeddings V2 - 1024 dimensions)
 """
-import os
 import logging
+import os
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
+from zoneinfo import ZoneInfo
 import httpx
 
 from constants import (
+    AGENT_TIMEZONE,
     TIMEOUT_CALL_CONTEXT,
 )
 
 logger = logging.getLogger(__name__)
 _shared_rag_client: Optional["RagClient"] = None
+
+
+def _parse_iso_datetime(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        normalized = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _format_months_ago(months: int) -> str:
+    if months == 1:
+        return "한 달 전"
+    if months == 2:
+        return "두 달 전"
+    return f"{months}개월 전"
+
+
+def format_relative_time_ko(
+    iso_timestamp: str,
+    now: Optional[datetime] = None,
+) -> Optional[str]:
+    dt = _parse_iso_datetime(iso_timestamp)
+    if not dt:
+        return None
+
+    try:
+        tz = ZoneInfo(AGENT_TIMEZONE)
+    except Exception:
+        tz = timezone.utc
+
+    dt_local = dt.astimezone(tz)
+    now_local = now.astimezone(tz) if now else datetime.now(tz)
+
+    if now_local < dt_local:
+        return "방금 전"
+
+    diff = now_local - dt_local
+    diff_seconds = int(diff.total_seconds())
+    diff_hours = diff_seconds // 3600
+    diff_days = diff_seconds // 86400
+
+    if diff_hours < 1:
+        return "방금 전"
+    if diff_hours < 24:
+        return f"{diff_hours}시간 전"
+    if diff_days == 1:
+        return "어제"
+    if diff_days < 7:
+        return f"{diff_days}일 전"
+    if diff_days < 14:
+        return "지난주"
+    if diff_days < 60:
+        weeks = diff_days // 7
+        return f"{weeks}주 전"
+
+    months = diff_days // 30
+    return _format_months_ago(months)
 
 
 class RagClient:
@@ -240,8 +306,8 @@ class RagClient:
     ) -> str:
         """
         Build a context-aware prompt by combining relevant past conversations
-
-        This is useful for giving the AI agent context about previous conversations
+        
+        Now includes relative time hints in Asia/Seoul timezone for better time awareness
 
         Args:
             ward_id: Ward UUID
@@ -250,7 +316,7 @@ class RagClient:
             context_limit: Number of recent conversations to include
 
         Returns:
-            Formatted context string that can be added to AI prompts
+            Formatted context string with timestamps that can be added to AI prompts
         """
         try:
             # Get both similar and recent contexts
@@ -260,8 +326,7 @@ class RagClient:
 
             context_parts = []
 
-            # Add similar conversations
-            # SAFE: Use .get() to avoid KeyError if API response missing fields
+            # Add similar conversations with timestamps
             if similar_results:
                 context_parts.append("=== 관련 과거 대화 ===")
                 for i, result in enumerate(similar_results, 1):
@@ -269,13 +334,18 @@ class RagClient:
                     similarity_pct = int(result.get("similarity", 0) * 100)
                     # Safe access: skip if text missing (avoid KeyError)
                     text = result.get("text", "")
+                    created_at = result.get("createdAt", "")
+                    relative_time = format_relative_time_ko(created_at)
+                    
                     if text:  # Only add if text exists
+                        time_label = (
+                            f" · {relative_time}" if relative_time else ""
+                        )
                         context_parts.append(
-                            f"\n[관련도 {similarity_pct}%]\n{text}\n"
+                            f"\n[관련도 {similarity_pct}%{time_label}]\n{text}\n"
                         )
 
-            # Add recent context
-            # SAFE: Use .get() to handle missing 'text' field gracefully
+            # Add recent context with timestamps
             if recent_context:
                 context_parts.append("\n=== 최근 대화 내역 ===")
                 for ctx in recent_context:
