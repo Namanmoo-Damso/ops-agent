@@ -10,13 +10,14 @@ Handles 4 alert types:
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass, asdict
 from enum import Enum
 from typing import Optional, Callable, Awaitable, Union
 
 from livekit import rtc
 
-from services.api_client import send_care_alert
+from services.api_client import send_care_alert, acknowledge_care_alert
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,9 @@ class CareAlertHandler:
     """Handles care alerts from iOS DataChannel."""
 
     TOPIC = "care_alert"
+    ACKNOWLEDGE_TOPIC = "acknowledge_alert"
+    ALERT_RESPONSE_TOPIC = "alert_response"  # Agent → iOS: alert activation notification
+    COOLDOWN_SECONDS = 30.0  # Prevent repeated alerts for 30 seconds
 
     # Alert response templates
     RESPONSES: dict = {
@@ -150,11 +154,13 @@ class CareAlertHandler:
         self.call_id = call_id
         self.last_emotion: Optional[EmotionType] = None
         self.emotion_change_count = 0
+        self.last_alert_id: Optional[str] = None  # Store last alert for acknowledge
+        self.last_alert_time: float = 0.0  # Timestamp of last handled alert
 
     def register(self) -> None:
         """Register data_received handler on room."""
         self.room.on("data_received")(self._on_data_received)
-        logger.info("CareAlertHandler registered")
+        logger.info(f"CareAlertHandler registered (topics: {self.TOPIC}, {self.ACKNOWLEDGE_TOPIC})")
 
     def _on_data_received(self, packet: rtc.DataPacket) -> None:
         """Handle incoming data packets.
@@ -162,24 +168,37 @@ class CareAlertHandler:
         Note: data_received event passes single DataPacket argument.
         participant info is available via packet.participant attribute.
         """
-        if packet.topic != self.TOPIC:
+        participant_id = packet.participant.identity if packet.participant else "Unknown"
+
+        # Handle care_alert topic
+        if packet.topic == self.TOPIC:
+            logger.info(f"[CareAlert] Received {packet.topic}, data_len={len(packet.data)}, from={participant_id}")
+            try:
+                raw_data = packet.data.decode("utf-8")
+                data = json.loads(raw_data)
+                alert = self._parse_alert(data)
+                if alert:
+                    self._handle_alert(alert)
+                else:
+                    logger.warning(f"Invalid care alert data: {raw_data[:200]}")
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse care_alert JSON: {e}, data={packet.data[:200]}")
+            except Exception as e:
+                logger.error(f"Failed to process care_alert: {e}", exc_info=True)
             return
 
-        participant_id = packet.participant.identity if packet.participant else "Unknown"
-        logger.info(f"[CareAlert] Received {packet.topic}, data_len={len(packet.data)}, from={participant_id}")
-
-        try:
-            raw_data = packet.data.decode("utf-8")
-            data = json.loads(raw_data)
-            alert = self._parse_alert(data)
-            if alert:
-                self._handle_alert(alert)
-            else:
-                logger.warning(f"Invalid care alert data: {raw_data[:200]}")
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse care_alert JSON: {e}, data={packet.data[:200]}")
-        except Exception as e:
-            logger.error(f"Failed to process care_alert: {e}", exc_info=True)
+        # Handle acknowledge_alert topic
+        if packet.topic == self.ACKNOWLEDGE_TOPIC:
+            logger.info(f"[AcknowledgeAlert] Received {packet.topic}, data_len={len(packet.data)}, from={participant_id}")
+            try:
+                raw_data = packet.data.decode("utf-8")
+                data = json.loads(raw_data)
+                self._handle_acknowledge(data)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse acknowledge_alert JSON: {e}")
+            except Exception as e:
+                logger.error(f"Failed to process acknowledge_alert: {e}", exc_info=True)
+            return
 
     def _parse_alert(self, data: dict) -> Optional[CareAlert]:
         """Parse JSON data into CareAlert."""
@@ -247,14 +266,51 @@ class CareAlertHandler:
         """Handle parsed alert and trigger response if needed."""
         logger.info(f"[CareAlert] {alert.alert_type.value} ({alert.severity.value})")
 
+        # Cooldown check to prevent repeated TTS (debounce)
+        now = time.time()
+        time_since_last = now - self.last_alert_time
+        
+        should_respond = True
+        if time_since_last < self.COOLDOWN_SECONDS:
+            logger.info(f"[CareAlert] Skipping TTS due to cooldown ({time_since_last:.1f}s < {self.COOLDOWN_SECONDS}s)")
+            should_respond = False
+        else:
+            self.last_alert_time = now
+
         response = self._get_response(alert)
-        if response:
+        if response and should_respond:
             asyncio.create_task(self.on_alert_response(response))
 
+        # Notify iOS app to show alert banner
+        if response and should_respond:
+            asyncio.create_task(self._notify_ios_alert(alert, response))
+
         # Publish to backend (Redis first, HTTP fallback)
+        # We still publish even if cooldown is active, to keep record
         asyncio.create_task(
-            self._publish_alert(alert, agent_response=response)
+            self._publish_alert(alert, agent_response=response if should_respond else None)
         )
+
+    async def _notify_ios_alert(self, alert: CareAlert, agent_response: str) -> None:
+        """Send alert notification to iOS app via DataChannel.
+
+        iOS app can display a banner/toast when receiving this message.
+        """
+        try:
+            payload = json.dumps({
+                "alertType": alert.alert_type.value,
+                "severity": alert.severity.value,
+                "agentResponse": agent_response,
+                "timestamp": alert.timestamp,
+            })
+            await self.room.local_participant.publish_data(
+                payload.encode("utf-8"),
+                reliable=True,
+                topic=self.ALERT_RESPONSE_TOPIC,
+            )
+            logger.info(f"[CareAlert] Notified iOS: {alert.alert_type.value} ({alert.severity.value})")
+        except Exception as e:
+            logger.error(f"[CareAlert] Failed to notify iOS: {e}")
 
     async def _publish_alert(
         self,
@@ -262,7 +318,7 @@ class CareAlertHandler:
         agent_response: Optional[str] = None,
     ) -> None:
         """Send alert to backend API for storage and push notification."""
-        success = await send_care_alert(
+        alert_id = await send_care_alert(
             ward_id=self.ward_id,
             alert_type=alert.alert_type.value,
             severity=alert.severity.value,
@@ -272,7 +328,10 @@ class CareAlertHandler:
             room_name=self.room.name,
             agent_response=agent_response,
         )
-        if not success:
+        if alert_id:
+            self.last_alert_id = alert_id
+            logger.info(f"[CareAlert] Stored last_alert_id={alert_id} for acknowledge")
+        else:
             logger.warning(
                 f"[CareAlert] Failed to send alert to API: "
                 f"ward={self.ward_id} type={alert.alert_type.value}"
@@ -317,3 +376,37 @@ class CareAlertHandler:
                     return self.RESPONSES[AlertType.EMOTION].get(payload.emotion.value)
 
         return None
+
+    def _handle_acknowledge(self, data: dict) -> None:
+        """Handle acknowledge_alert signal from iOS.
+
+        iOS sends this when user says "I'm okay" or presses acknowledge button.
+        This triggers API call to dismiss the alert and remove Web UI danger indicator.
+        """
+        timestamp = data.get("timestamp", 0)
+        ward_id = data.get("wardId", self.ward_id)
+
+        logger.info(f"[AcknowledgeAlert] Processing: ward={ward_id} timestamp={timestamp}")
+
+        # Reset cooldown so next alert can trigger TTS immediately
+        self.last_alert_time = 0.0
+        logger.info("[AcknowledgeAlert] Cooldown reset - next alert will trigger TTS")
+
+        # Use last stored alertId or find from API
+        alert_id = self.last_alert_id
+
+        if not alert_id:
+            logger.warning("[AcknowledgeAlert] No last_alert_id stored, cannot acknowledge")
+            return
+
+        # Call API to acknowledge
+        asyncio.create_task(self._publish_acknowledge(alert_id))
+
+    async def _publish_acknowledge(self, alert_id: str) -> None:
+        """Send acknowledge request to backend API."""
+        success = await acknowledge_care_alert(alert_id)
+        if success:
+            logger.info(f"[AcknowledgeAlert] Successfully acknowledged: alertId={alert_id}")
+            self.last_alert_id = None  # Clear after successful acknowledge
+        else:
+            logger.warning(f"[AcknowledgeAlert] Failed to acknowledge: alertId={alert_id}")

@@ -78,7 +78,7 @@ async def send_care_alert(
     call_id: Optional[str] = None,
     room_name: Optional[str] = None,
     agent_response: Optional[str] = None,
-) -> bool:
+) -> Optional[str]:
     """
     Send care alert to backend API.
 
@@ -93,11 +93,11 @@ async def send_care_alert(
         agent_response: Optional agent response message
 
     Returns:
-        True if sent successfully, False otherwise
+        alertId if sent successfully, None otherwise
     """
     if not API_BASE:
         logger.error("API_BASE_URL not configured")
-        return False
+        return None
 
     # Build request body matching CreateCareAlertDto
     request_body = {
@@ -131,11 +131,49 @@ async def send_care_alert(
                 timeout=5.0,
             )
             response.raise_for_status()
-            logger.info(f"Care alert sent via API: ward={ward_id} type={alert_type} call={call_id}")
-            return True
+            result = response.json()
+            alert_id = result.get("alertId")
+            logger.info(f"Care alert sent via API: ward={ward_id} type={alert_type} alertId={alert_id}")
+            return alert_id
     except httpx.HTTPStatusError as e:
         logger.error(f"Care alert API error: status={e.response.status_code}")
-        return False
+        return None
     except Exception as e:
         logger.error(f"Failed to send care alert via API: {e}")
+        return None
+
+
+async def acknowledge_care_alert(alert_id: str) -> bool:
+    """
+    Acknowledge (dismiss) a care alert via backend API.
+
+    Args:
+        alert_id: Alert UUID to acknowledge
+
+    Returns:
+        True if acknowledged successfully, False otherwise
+    """
+    if not API_BASE:
+        logger.error("API_BASE_URL not configured")
+        return False
+
+    if not alert_id:
+        logger.warning("acknowledge_care_alert called with empty alert_id")
+        return False
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(
+                f"{API_BASE}/v1/guardians/alerts/{alert_id}/acknowledge",
+                headers=get_auth_headers(),
+                timeout=5.0,
+            )
+            response.raise_for_status()
+            logger.info(f"Care alert acknowledged via API: alertId={alert_id}")
+            return True
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Acknowledge alert API error: alertId={alert_id} status={e.response.status_code}")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to acknowledge care alert via API: {e}")
         return False
