@@ -23,13 +23,24 @@ TIMEOUT_RAG_CONTEXT_WARMUP = 2.0  # Fast context fetch during call startup
 TIMEOUT_RAG_SEARCH_QUICK = 3.0    # Quick RAG search during conversation
 TIMEOUT_GREETING_FETCH = 5.0      # Wait for personalized greeting from Redis Pub/Sub (allows time for LLM generation)
 
-# Similarity threshold for memory recall (lowered from 0.5 to 0.4 to improve recall coverage).
-# Tune via env var if relevance drops: RAG_MEMORY_SIMILARITY_THRESHOLD.
+# Similarity threshold for memory recall (Parent-Child optimized)
+# Parent-Child structure provides better context, allowing slightly lower threshold
+# for better recall without sacrificing relevance. Tune via env var if needed.
+# Previous single-vector threshold: 0.4
+# Parent-Child optimized threshold: 0.35 (lower due to better context quality)
 MEMORY_SIMILARITY_THRESHOLD = float(
-    os.getenv("RAG_MEMORY_SIMILARITY_THRESHOLD", "0.4")
+    os.getenv("RAG_MEMORY_SIMILARITY_THRESHOLD", "0.35")
 )
 
 # Redis retry configuration
 REDIS_MAX_RETRIES = 5
 REDIS_RETRY_DELAY = 2.0  # seconds
 REDIS_RETRY_BACKOFF = 2.0  # exponential backoff multiplier
+
+# Parent-Child RAG configuration
+# Child chunk size for searchable units (smaller than parent for focused matching)
+RAG_CHILD_CHUNK_SIZE = int(os.getenv("RAG_CHILD_CHUNK_SIZE", "200"))
+# Child chunk overlap for context continuity
+RAG_CHILD_CHUNK_OVERLAP = int(os.getenv("RAG_CHILD_CHUNK_OVERLAP", "50"))
+# Window context size for parent snippet extraction (characters before/after child match)
+RAG_WINDOW_CONTEXT_CHARS = int(os.getenv("RAG_WINDOW_CONTEXT_CHARS", "150"))

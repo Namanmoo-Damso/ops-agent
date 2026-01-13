@@ -148,7 +148,7 @@ class RagClient:
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
         """
-        Search for similar conversation chunks
+        Search for similar conversation chunks using Parent-Child structure
 
         Args:
             ward_id: Ward UUID to search within
@@ -156,16 +156,16 @@ class RagClient:
             limit: Maximum number of results to return
 
         Returns:
-            List of results with text, metadata, and similarity score
+            List of results with parent context and snippet
             Example:
             [
                 {
-                    "text": "[user]: 요즘 무릎이 아파요\n[assistant]: 무릎 통증이 있으시군요...",
-                    "metadata": {
-                        "speakers": ["user", "assistant"],
-                        "timestamp": "2024-01-10T12:00:00Z",
-                        "chunkLength": 250
-                    },
+                    "text": "...무릎이 아파요...",  # Window snippet around match
+                    "childText": "무릎이 아파요",
+                    "parentText": "[날짜: 2024-01-10] [user]: 요즘 무릎이 아파요\n[assistant]: ...",
+                    "parentId": "uuid",
+                    "snippet": "...무릎이 아파요...",
+                    "metadata": {...},
                     "similarity": 0.85
                 }
             ]
@@ -305,9 +305,10 @@ class RagClient:
         context_limit: int = 5,
     ) -> str:
         """
-        Build a context-aware prompt by combining relevant past conversations
-        
-        Now includes relative time hints in Asia/Seoul timezone for better time awareness
+        Build a context-aware prompt using Parent-Child structure
+
+        Now uses parent context for broader understanding and snippet for focused relevance
+        Includes relative time hints in Asia/Seoul timezone for better time awareness
 
         Args:
             ward_id: Ward UUID
@@ -316,7 +317,7 @@ class RagClient:
             context_limit: Number of recent conversations to include
 
         Returns:
-            Formatted context string with timestamps that can be added to AI prompts
+            Formatted context string with parent context and timestamps
         """
         try:
             # Get both similar and recent contexts
@@ -326,17 +327,22 @@ class RagClient:
 
             context_parts = []
 
-            # Add similar conversations with timestamps
+            # Add similar conversations with parent context and timestamps
             if similar_results:
                 context_parts.append("=== 관련 과거 대화 ===")
                 for i, result in enumerate(similar_results, 1):
                     # Safe access: default to 0 if similarity missing
                     similarity_pct = int(result.get("similarity", 0) * 100)
-                    # Safe access: skip if text missing (avoid KeyError)
-                    text = result.get("text", "")
+
+                    # Prefer snippet (window context) over full parent for focused relevance
+                    # Fall back to parentText if snippet not available
+                    snippet = result.get("snippet", "")
+                    parent_text = result.get("parentText", "")
+                    text = snippet or parent_text or result.get("text", "")
+
                     created_at = result.get("createdAt", "")
                     relative_time = format_relative_time_ko(created_at)
-                    
+
                     if text:  # Only add if text exists
                         time_label = (
                             f" · {relative_time}" if relative_time else ""
