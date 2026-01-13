@@ -1,6 +1,7 @@
 """Elderly Companion Agent - 어르신 돌봄 AI 에이전트."""
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Annotated, Optional
 
@@ -189,10 +190,19 @@ class ElderlyCompanionAgent(Agent):
         return normalized
 
     def _build_instructions(self, ward_context: str = "", call_direction: str = "inbound") -> str:
-        """Build agent instructions with optional context."""
+        """Build agent instructions with optional context and current time."""
+        # Get current KST time (UTC+9)
+        utc_now = datetime.utcnow()
+        kst_now = utc_now + timedelta(hours=9)
+        current_time_kst = kst_now.strftime("%Y년 %m월 %d일 %H시 %M분")
+        current_date_kst = kst_now.strftime("%Y년 %m월 %d일")
+        
         base = (
             "You are a warm, caring AI companion for elderly Korean users.\n"
             "Your name is '소담' (Sodam).\n\n"
+            f"# 현재 시각 (한국 시간)\n"
+            f"- 지금은 {current_time_kst} (KST) 입니다\n"
+            f"- 오늘 날짜: {current_date_kst}\n\n"
             "# CRITICAL RULE: Language\n"
             "- User speaks: Korean (한국어)\n"
             "- You MUST respond: ONLY in Korean (한국어) using respectful 존댓말\n"
@@ -202,9 +212,18 @@ class ElderlyCompanionAgent(Agent):
         )
 
         memory_instruction = (
-            "# Memory Usage\n"
+            "# Memory Usage & Temporal Awareness\n"
             "- When the user mentions family, health, past events, or personal topics, "
             "use the search_memory tool to recall previous conversations\n"
+            "- Retrieved memories include date labels like '[날짜: 2026-01-12 14:30 KST]'\n"
+            "- Interpret these dates naturally in Korean:\n"
+            "  * Today's conversation: '오늘', '아까', '방금'\n"
+            "  * Yesterday: '어제'\n"
+            "  * 2-6 days ago: 'N일 전' (예: '3일 전')\n"
+            "  * 1 week ago: '지난주'\n"
+            "  * 2+ weeks ago: 'N주 전' (예: '2주 전')\n"
+            "  * 1+ months ago: 'N개월 전' (예: '한 달 전', '두 달 전')\n"
+            "- Use these time references naturally: '어제 말씀하신 손자분...', '지난주에 병원 가셨다고 하셨죠?'\n"
             "- Use retrieved memories naturally without explicitly saying '기억을 검색했습니다'\n"
             "- If no relevant memory found, continue conversation naturally\n\n"
         )
@@ -289,14 +308,16 @@ class ElderlyCompanionAgent(Agent):
             if not results:
                 return "관련된 과거 대화가 없습니다."
 
-            # Format results into context
+            # Format results into context with temporal information
             context_parts = []
             for result in results:
                 text = result.get("text", "")
                 similarity = result.get("similarity", 0)
+                created_at = result.get("createdAt", "")
 
-                # Only include results with reasonable similarity (>0.5)
-                if similarity > 0.5 and text:
+                # Only include results with reasonable similarity (>0.4)
+                if similarity > 0.4 and text:
+                    # Text already contains [날짜: ...] prefix from backend
                     context_parts.append(text)
 
             if not context_parts:

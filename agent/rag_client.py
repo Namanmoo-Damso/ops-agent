@@ -240,8 +240,8 @@ class RagClient:
     ) -> str:
         """
         Build a context-aware prompt by combining relevant past conversations
-
-        This is useful for giving the AI agent context about previous conversations
+        
+        Now includes temporal context with KST timestamps for better time awareness
 
         Args:
             ward_id: Ward UUID
@@ -250,7 +250,7 @@ class RagClient:
             context_limit: Number of recent conversations to include
 
         Returns:
-            Formatted context string that can be added to AI prompts
+            Formatted context string with timestamps that can be added to AI prompts
         """
         try:
             # Get both similar and recent contexts
@@ -260,8 +260,7 @@ class RagClient:
 
             context_parts = []
 
-            # Add similar conversations
-            # SAFE: Use .get() to avoid KeyError if API response missing fields
+            # Add similar conversations with timestamps
             if similar_results:
                 context_parts.append("=== 관련 과거 대화 ===")
                 for i, result in enumerate(similar_results, 1):
@@ -269,13 +268,16 @@ class RagClient:
                     similarity_pct = int(result.get("similarity", 0) * 100)
                     # Safe access: skip if text missing (avoid KeyError)
                     text = result.get("text", "")
+                    created_at = result.get("createdAt", "")
+                    
                     if text:  # Only add if text exists
+                        # Format: [{timestamp}] {text}
+                        # Note: text already contains [날짜: ...] prefix from backend
                         context_parts.append(
                             f"\n[관련도 {similarity_pct}%]\n{text}\n"
                         )
 
-            # Add recent context
-            # SAFE: Use .get() to handle missing 'text' field gracefully
+            # Add recent context with timestamps
             if recent_context:
                 context_parts.append("\n=== 최근 대화 내역 ===")
                 for ctx in recent_context:

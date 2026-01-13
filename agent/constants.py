@@ -16,7 +16,7 @@ TIMEOUT_RAG_INDEXING = 10.0       # RAG indexing trigger (embedding generation)
 TIMEOUT_CALL_END = 10.0           # Call end notification (AI analysis)
 TIMEOUT_RAG_CONTEXT_WARMUP = 2.0  # Fast context fetch during call startup
 TIMEOUT_RAG_SEARCH_QUICK = 3.0    # Quick RAG search during conversation
-TIMEOUT_GREETING_FETCH = 0.5      # Quick Redis fetch for preloaded greeting (300-500ms)
+TIMEOUT_GREETING_FETCH = 5.0      # Wait for personalized greeting from Redis Pub/Sub (allows time for LLM generation)
 
 # Redis retry configuration
 REDIS_MAX_RETRIES = 5
