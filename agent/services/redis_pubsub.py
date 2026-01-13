@@ -8,7 +8,7 @@ from typing import Optional
 import redis
 import redis.asyncio as redis_async
 
-from config import validate_env_vars
+from config import ConfigError, validate_env_vars
 from constants import (
     TRANSCRIPT_CHANNEL,
     CALL_END_CHANNEL,
@@ -37,7 +37,11 @@ async def get_redis_client() -> Optional[redis_async.Redis]:
         if _redis_client:
             return _redis_client
 
-        env_config = validate_env_vars()
+        try:
+            env_config = validate_env_vars()
+        except ConfigError as e:
+            logger.error(f"Redis env validation failed: {e}")
+            return None
 
         for attempt in range(REDIS_MAX_RETRIES):
             try:

@@ -8,11 +8,10 @@ import logging
 import os
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from zoneinfo import ZoneInfo
 import httpx
 
 from constants import (
-    AGENT_TIMEZONE,
+    AGENT_TZINFO,
     TIMEOUT_CALL_CONTEXT,
 )
 
@@ -49,11 +48,7 @@ def format_relative_time_ko(
     if not dt:
         return None
 
-    try:
-        tz = ZoneInfo(AGENT_TIMEZONE)
-    except Exception:
-        tz = timezone.utc
-
+    tz = AGENT_TZINFO or timezone.utc
     dt_local = dt.astimezone(tz)
     now_local = now.astimezone(tz) if now else datetime.now(tz)
 
@@ -81,6 +76,18 @@ def format_relative_time_ko(
 
     months = diff_days // 30
     return _format_months_ago(months)
+
+
+def extract_result_text(result: Dict[str, Any]) -> str:
+    """Select the most relevant text field from a RAG search result."""
+    snippet = result.get("snippet", "")
+    parent_text = result.get("parentText", "")
+    return snippet or parent_text or result.get("text", "")
+
+
+def extract_result_time_label(result: Dict[str, Any]) -> Optional[str]:
+    created_at = result.get("createdAt", "")
+    return format_relative_time_ko(created_at)
 
 
 class RagClient:
@@ -334,14 +341,8 @@ class RagClient:
                     # Safe access: default to 0 if similarity missing
                     similarity_pct = int(result.get("similarity", 0) * 100)
 
-                    # Prefer snippet (window context) over full parent for focused relevance
-                    # Fall back to parentText if snippet not available
-                    snippet = result.get("snippet", "")
-                    parent_text = result.get("parentText", "")
-                    text = snippet or parent_text or result.get("text", "")
-
-                    created_at = result.get("createdAt", "")
-                    relative_time = format_relative_time_ko(created_at)
+                    text = extract_result_text(result)
+                    relative_time = extract_result_time_label(result)
 
                     if text:  # Only add if text exists
                         time_label = (

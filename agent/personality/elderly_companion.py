@@ -5,18 +5,20 @@ import time
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Optional
-from zoneinfo import ZoneInfo
 
 from livekit.agents import Agent, RunContext, function_tool
 from pydantic import Field
 
 from constants import (
-    AGENT_TIMEZONE,
-    MEMORY_SIMILARITY_THRESHOLD,
+    AGENT_TZINFO,
     TIMEOUT_GREETING_FETCH,
     TIMEOUT_RAG_SEARCH_QUICK,
 )
-from rag_client import format_relative_time_ko, get_shared_rag_client
+from rag_client import (
+    extract_result_text,
+    extract_result_time_label,
+    get_shared_rag_client,
+)
 from services.redis_pubsub import subscribe_to_greeting
 from userdata import SessionUserdata
 
@@ -144,7 +146,12 @@ class ElderlyCompanionAgent(Agent):
         """
         from services.redis_pubsub import get_redis_client
 
-        client = await get_redis_client()
+        try:
+            client = await get_redis_client()
+        except Exception as e:
+            logger.error(f"[greeting] Redis client init failed: {e}")
+            self.session.say(fallback_greeting, allow_interruptions=False)
+            return
         if not client:
             logger.warning(f"[greeting] Redis unavailable, using static greeting")
             self.session.say(fallback_greeting, allow_interruptions=False)
@@ -163,7 +170,10 @@ class ElderlyCompanionAgent(Agent):
 
         # Cache miss - say static greeting first, then wait for Pub/Sub
         logger.info(f"[greeting] No cached greeting, saying static greeting first")
-        self.session.say(fallback_greeting, allow_interruptions=False)
+        try:
+            self.session.say(fallback_greeting, allow_interruptions=False)
+        except Exception as e:
+            logger.error(f"[greeting] Failed to deliver static greeting: {e}")
 
         # Now subscribe for Pub/Sub updates
         await subscribe_to_greeting(
@@ -272,7 +282,7 @@ class ElderlyCompanionAgent(Agent):
 
     def _build_instructions(self, ward_context: str = "", call_direction: str = "inbound") -> str:
         """Build agent instructions with optional context and current time."""
-        tz = ZoneInfo(AGENT_TIMEZONE)
+        tz = AGENT_TZINFO
         local_now = datetime.now(tz)
         current_time_kst = local_now.strftime("%Y년 %m월 %d일 %H시 %M분")
         current_date_kst = local_now.strftime("%Y년 %m월 %d일")
@@ -387,17 +397,11 @@ class ElderlyCompanionAgent(Agent):
             # Format results into context with parent context and temporal information
             context_parts = []
             for result in results:
-                # Prefer snippet (window context) for focused relevance
-                snippet = result.get("snippet", "")
-                parent_text = result.get("parentText", "")
-                text = snippet or parent_text or result.get("text", "")
-
-                similarity = result.get("similarity", 0)
-                created_at = result.get("createdAt", "")
+                text = extract_result_text(result)
+                relative_time = extract_result_time_label(result)
 
                 # API already filtered by SIMILARITY_THRESHOLD, so trust all returned results
                 if text:
-                    relative_time = format_relative_time_ko(created_at)
                     if relative_time:
                         context_parts.append(f"{text}\n[경과: {relative_time}]")
                     else:
