@@ -1,4 +1,5 @@
 """Elderly Companion Agent - 어르신 돌봄 AI 에이전트."""
+
 import asyncio
 import logging
 import time
@@ -6,14 +7,13 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, Optional
 
-from livekit.agents import Agent, RunContext, function_tool
-from pydantic import Field
-
 from constants import (
     AGENT_TZINFO,
     TIMEOUT_GREETING_FETCH,
     TIMEOUT_RAG_SEARCH_QUICK,
 )
+from livekit.agents import Agent, RunContext, function_tool
+from pydantic import Field
 from rag_client import (
     extract_result_text,
     extract_result_time_label,
@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 
 class CallDirection(str, Enum):
     """Call direction types."""
-    INBOUND = "inbound"   # User calls agent
+
+    INBOUND = "inbound"  # User calls agent
     OUTBOUND = "outbound"  # Agent calls user
 
 
@@ -69,10 +70,12 @@ class ElderlyCompanionAgent(Agent):
         This ensures zero-latency first response while receiving RAG-enhanced greeting
         when the backend is ready.
         """
-        logger.info(f"ElderlyCompanionAgent entering with direction={self.call_direction}")
+        logger.info(
+            f"ElderlyCompanionAgent entering with direction={self.call_direction}"
+        )
 
         # Check if session is initialized
-        if not hasattr(self, 'session') or self.session is None:
+        if not hasattr(self, "session") or self.session is None:
             logger.error("Session not initialized in on_enter")
             return
 
@@ -83,7 +86,9 @@ class ElderlyCompanionAgent(Agent):
             fallback_greeting = GREETING_INBOUND
 
         # 📡 Hybrid Pull/Push approach for personalized greeting
-        if hasattr(self.session, 'userdata') and hasattr(self.session.userdata, 'ward_id'):
+        if hasattr(self.session, "userdata") and hasattr(
+            self.session.userdata, "ward_id"
+        ):
             ward_id = self.session.userdata.ward_id
             logger.info(
                 f"[greeting] Checking for personalized greeting (ward={ward_id})"
@@ -100,7 +105,9 @@ class ElderlyCompanionAgent(Agent):
                 )
                 greeting_received.set()
                 # Say the full cached greeting immediately
-                logger.info(f"[greeting] Using cached greeting in full: {personalized_greeting[:50]}...")
+                logger.info(
+                    f"[greeting] Using cached greeting in full: {personalized_greeting[:50]}..."
+                )
                 self.session.say(personalized_greeting, allow_interruptions=False)
 
             async def on_greeting_pubsub(personalized_greeting: str) -> None:
@@ -153,7 +160,7 @@ class ElderlyCompanionAgent(Agent):
             self.session.say(fallback_greeting, allow_interruptions=False)
             return
         if not client:
-            logger.warning(f"[greeting] Redis unavailable, using static greeting")
+            logger.warning("[greeting] Redis unavailable, using static greeting")
             self.session.say(fallback_greeting, allow_interruptions=False)
             return
 
@@ -169,7 +176,7 @@ class ElderlyCompanionAgent(Agent):
             logger.error(f"[greeting] Error checking cache: {e}")
 
         # Cache miss - say static greeting first, then wait for Pub/Sub
-        logger.info(f"[greeting] No cached greeting, saying static greeting first")
+        logger.info("[greeting] No cached greeting, saying static greeting first")
         try:
             self.session.say(fallback_greeting, allow_interruptions=False)
         except Exception as e:
@@ -193,7 +200,9 @@ class ElderlyCompanionAgent(Agent):
             personalized_greeting: Full greeting text from backend RAG service
         """
         try:
-            logger.info(f"[greeting] Received via Pub/Sub (length={len(personalized_greeting)})")
+            logger.info(
+                f"[greeting] Received via Pub/Sub (length={len(personalized_greeting)})"
+            )
 
             # Determine what static greeting was already said
             if self.call_direction == CallDirection.OUTBOUND:
@@ -202,24 +211,34 @@ class ElderlyCompanionAgent(Agent):
                 static_greeting = GREETING_INBOUND
 
             # Skip if it's identical to what we already said (after normalization)
-            if self._normalize_greeting(personalized_greeting) == self._normalize_greeting(static_greeting):
+            if self._normalize_greeting(
+                personalized_greeting
+            ) == self._normalize_greeting(static_greeting):
                 logger.info("[greeting] Personalized greeting same as static, skipping")
                 return
 
             # Extract additional content (remove static prefix if present)
-            additional_content = self._extract_additional_content(personalized_greeting, static_greeting)
+            additional_content = self._extract_additional_content(
+                personalized_greeting, static_greeting
+            )
 
             if additional_content:
-                logger.info(f"[greeting] Adding personalized content: {additional_content[:50]}...")
+                logger.info(
+                    f"[greeting] Adding personalized content: {additional_content[:50]}..."
+                )
                 # Say the additional personalized content
                 self.session.say(additional_content, allow_interruptions=True)
             else:
                 logger.info("[greeting] No additional content to add")
 
         except Exception as e:
-            logger.error(f"[greeting] Error processing received greeting: {e}", exc_info=True)
+            logger.error(
+                f"[greeting] Error processing received greeting: {e}", exc_info=True
+            )
 
-    def _extract_additional_content(self, full_greeting: str, static_part: str) -> Optional[str]:
+    def _extract_additional_content(
+        self, full_greeting: str, static_part: str
+    ) -> Optional[str]:
         """
         Extract additional personalized content from full greeting.
 
@@ -240,14 +259,14 @@ class ElderlyCompanionAgent(Agent):
 
         # Strategy 1: Remove exact static prefix
         if full_greeting.startswith(static_part):
-            additional = full_greeting[len(static_part):].strip()
+            additional = full_greeting[len(static_part) :].strip()
             if additional and len(additional) > 5:  # Meaningful content
                 if self._normalize_greeting(additional) != static_part:
                     return additional
 
         # Strategy 2: Split by sentence and remove first if it's static greeting
         # Handle various sentence endings including Korean punctuation
-        for delimiter in ['. ', '。 ', '. ', '.\n', '! ', '? ', '！ ', '？ ']:
+        for delimiter in [". ", "。 ", ". ", ".\n", "! ", "? ", "！ ", "？ "]:
             if delimiter in full_greeting:
                 sentences = full_greeting.split(delimiter, 1)
                 if len(sentences) >= 2:
@@ -255,8 +274,15 @@ class ElderlyCompanionAgent(Agent):
                     rest = sentences[1].strip()
 
                     # If first sentence matches static greeting, use rest
-                    if first_sentence == static_part or first_sentence + '.' == static_part:
-                        if rest and len(rest) > 5 and self._normalize_greeting(rest) != static_part:
+                    if (
+                        first_sentence == static_part
+                        or first_sentence + "." == static_part
+                    ):
+                        if (
+                            rest
+                            and len(rest) > 5
+                            and self._normalize_greeting(rest) != static_part
+                        ):
                             return rest
 
         # Strategy 3: If full greeting is completely different, use it
@@ -275,18 +301,20 @@ class ElderlyCompanionAgent(Agent):
         - Collapse double spaces
         """
         normalized = text.strip().lower()
-        while normalized.endswith(('.', '!', '?', '，', '？', '！', '…')):
+        while normalized.endswith((".", "!", "?", "，", "？", "！", "…")):
             normalized = normalized[:-1].strip()
         normalized = " ".join(normalized.split())
         return normalized
 
-    def _build_instructions(self, ward_context: str = "", call_direction: str = "inbound") -> str:
+    def _build_instructions(
+        self, ward_context: str = "", call_direction: str = "inbound"
+    ) -> str:
         """Build agent instructions with optional context and current time."""
         tz = AGENT_TZINFO
         local_now = datetime.now(tz)
         current_time_kst = local_now.strftime("%Y년 %m월 %d일 %H시 %M분")
         current_date_kst = local_now.strftime("%Y년 %m월 %d일")
-        
+
         base = (
             "You are a warm, caring AI companion for elderly Korean users.\n"
             "Your name is '소담' (Sodam).\n\n"
@@ -314,10 +342,7 @@ class ElderlyCompanionAgent(Agent):
 
         context_section = ""
         if ward_context:
-            context_section = (
-                "# 어르신 정보 (참고용)\n"
-                f"{ward_context}\n\n"
-            )
+            context_section = f"# 어르신 정보 (참고용)\n{ward_context}\n\n"
 
         output_rules = (
             "# Output rules\n"
@@ -361,7 +386,9 @@ class ElderlyCompanionAgent(Agent):
         context: RunContext[SessionUserdata],
         query: Annotated[
             str,
-            Field(description="검색할 키워드나 주제 (예: '손자', '병원', '약', '가족')"),
+            Field(
+                description="검색할 키워드나 주제 (예: '손자', '병원', '약', '가족')"
+            ),
         ],
     ) -> str:
         """
