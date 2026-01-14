@@ -5,14 +5,15 @@ import logging
 import time
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Optional
+from typing import Annotated, AsyncIterable, Optional
 
 from constants import (
     AGENT_TZINFO,
     TIMEOUT_GREETING_FETCH,
     TIMEOUT_RAG_SEARCH_QUICK,
 )
-from livekit.agents import Agent, RunContext, function_tool
+from livekit import rtc
+from livekit.agents import Agent, ModelSettings, RunContext, function_tool, llm, stt
 from pydantic import Field
 from rag_client import (
     extract_result_text,
@@ -23,6 +24,7 @@ from services.redis_pubsub import subscribe_to_greeting
 from userdata import SessionUserdata
 
 logger = logging.getLogger(__name__)
+pipeline_timing_logger = logging.getLogger("PIPELINE_TIMING")
 
 
 class CallDirection(str, Enum):
@@ -54,9 +56,99 @@ class ElderlyCompanionAgent(Agent):
             call_direction: "inbound" or "outbound"
         """
         self.call_direction = call_direction
+        # Pipeline timing metrics (VAD-STT-RAG-LLM-TTS)
+        self._pipeline_times: dict = {}
         super().__init__(
             instructions=self._build_instructions(ward_context, call_direction),
         )
+
+    async def stt_node(
+        self, audio: AsyncIterable[rtc.AudioFrame], model_settings: ModelSettings
+    ) -> Optional[AsyncIterable[stt.SpeechEvent]]:
+        """Override STT node to measure STT timing."""
+        # Get the default STT events stream
+        events = Agent.default.stt_node(self, audio, model_settings)
+        if events is None:
+            pipeline_timing_logger.warning("STT node returned None - no STT configured")
+            return None
+
+        # Wrap the events stream to add timing
+        async def timed_stt_events():
+            try:
+                async for event in events:
+                    if hasattr(event, "type"):
+                        event_type = str(event.type)
+
+                        # Record STT duration when we get final transcript
+                        # Use VAD end time as reference (when user stopped speaking)
+                        # This measures actual STT processing time, not speech duration
+                        if "final" in event_type.lower():
+                            vad_end = self._pipeline_times.get("vad_end")
+                            if vad_end:
+                                stt_duration = time.time() - vad_end
+                                self._pipeline_times["stt_duration"] = stt_duration
+                                # Clear vad_end after recording to prevent duplicate STT events
+                                # from calculating cumulative time from the same vad_end
+                                del self._pipeline_times["vad_end"]
+
+                    yield event
+            except Exception as e:
+                pipeline_timing_logger.error(f"STT error: {e}")
+                raise
+
+        return timed_stt_events()
+
+    async def llm_node(
+        self,
+        chat_ctx: llm.ChatContext,
+        tools: list,
+        model_settings: ModelSettings,
+    ) -> AsyncIterable[llm.ChatChunk]:
+        """Override LLM node to measure LLM timing."""
+        llm_start = time.time()
+        self._pipeline_times["llm_start"] = llm_start
+        first_chunk = True
+
+        async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
+            if first_chunk:
+                ttft = time.time() - llm_start
+                self._pipeline_times["llm_ttft"] = ttft
+                first_chunk = False
+            yield chunk
+
+        llm_duration = time.time() - llm_start
+        self._pipeline_times["llm_duration"] = llm_duration
+
+    async def tts_node(
+        self, text: AsyncIterable[str], model_settings: ModelSettings
+    ) -> AsyncIterable[rtc.AudioFrame]:
+        """Override TTS node to measure TTS timing and log pipeline summary."""
+        tts_start = time.time()
+        self._pipeline_times["tts_start"] = tts_start
+        first_frame = True
+
+        async for frame in Agent.default.tts_node(self, text, model_settings):
+            if first_frame:
+                ttfb = time.time() - tts_start
+                self._pipeline_times["tts_ttfb"] = ttfb
+                first_frame = False
+            yield frame
+
+        tts_duration = time.time() - tts_start
+        self._pipeline_times["tts_duration"] = tts_duration
+
+        # Log full pipeline summary
+        vad = self._pipeline_times.get("vad_duration", 0)
+        stt = self._pipeline_times.get("stt_duration", 0)
+        rag = self._pipeline_times.get("rag_duration", 0)
+        llm_time = self._pipeline_times.get("llm_duration", 0)
+        tts_time = self._pipeline_times.get("tts_duration", 0)
+        total = vad + stt + rag + llm_time + tts_time
+        pipeline_timing_logger.info(
+            f"TOTAL={total:.3f}s | VAD={vad:.3f}s STT={stt:.3f}s RAG={rag:.3f}s LLM={llm_time:.3f}s TTS={tts_time:.3f}s"
+        )
+        # Note: _pipeline_times is cleared at VAD start (when user starts speaking)
+        # to prevent race conditions when turns overlap
 
     async def on_enter(self) -> None:
         """
@@ -409,6 +501,7 @@ class ElderlyCompanionAgent(Agent):
         Returns:
             Retrieved memory context with parent context or message if not found
         """
+        rag_start = time.time()
         rag_client = get_shared_rag_client(timeout=TIMEOUT_RAG_SEARCH_QUICK)
         ward_id = context.userdata.ward_id
 
@@ -420,6 +513,10 @@ class ElderlyCompanionAgent(Agent):
                 query=query,
                 limit=3,  # Top 3 for quick recall
             )
+            # Record RAG timing
+            rag_duration = time.time() - rag_start
+            self._pipeline_times["rag_duration"] = rag_duration
+            pipeline_timing_logger.info(f"RAG={rag_duration:.3f}s")
 
             if not results:
                 return "관련된 과거 대화가 없습니다."

@@ -3,42 +3,39 @@ Korean Voice AI Agent for Elderly Care.
 
 LiveKit Agents 1.3.10 - AgentServer pattern
 """
+
 import asyncio
+import logging
 import os
 import sys
-import logging
 import time
 
+from config import ConfigError, get_optional_config, validate_env_vars
+from constants import TIMEOUT_RAG_CONTEXT_WARMUP
+from handlers.care_alert import CareAlertHandler
+from handlers.session import (
+    SessionEndHandler,
+    extract_ward_id,
+    get_session_metadata,
+    wait_for_participant,
+)
+from handlers.takeover import TakeoverHandler
+from handlers.transcript import TranscriptHandler
 from livekit.agents import (
     AgentServer,
     AgentSession,
     JobContext,
     JobProcess,
-    MetricsCollectedEvent,
     cli,
     room_io,
 )
-from livekit.agents.metrics import STTMetrics, LLMMetrics, TTSMetrics
 from livekit.plugins import aws, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
-
-from config import validate_env_vars, get_optional_config, ConfigError
-from constants import TIMEOUT_RAG_CONTEXT_WARMUP
-from personality.elderly_companion import ElderlyCompanionAgent, CallDirection
-from userdata import SessionUserdata
-from services.redis_pubsub import get_redis_client, publish_call_end
-from services.api_client import fetch_call_context, notify_call_end
-from handlers.transcript import TranscriptHandler
-from handlers.takeover import TakeoverHandler
-from handlers.care_alert import CareAlertHandler
-from handlers.session import (
-    extract_ward_id,
-    get_session_metadata,
-    get_target_identity,
-    SessionEndHandler,
-    wait_for_participant,
-)
+from personality.elderly_companion import CallDirection, ElderlyCompanionAgent
 from rag_client import get_shared_rag_client
+from services.api_client import fetch_call_context, notify_call_end
+from services.redis_pubsub import get_redis_client, publish_call_end
+from userdata import SessionUserdata
 
 # Agent name for routing
 AGENT_NAME = os.getenv("AGENT_NAME", "voice-agent")
@@ -61,8 +58,7 @@ else:
 # Set logging
 log_level = getattr(logging, optional_config["LOG_LEVEL"].upper(), logging.INFO)
 logging.basicConfig(
-    level=log_level,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -106,7 +102,10 @@ def prewarm(proc: JobProcess):
 server.setup_fnc = prewarm
 
 
-async def load_conversation_context(ward_id: str, timeout: float = TIMEOUT_RAG_CONTEXT_WARMUP) -> str:
+async def load_conversation_context(
+    ward_id: str,
+    timeout: float = TIMEOUT_RAG_CONTEXT_WARMUP,
+) -> str:
     """
     Load recent conversation context for the ward using RAG.
 
@@ -148,13 +147,17 @@ async def load_conversation_context(ward_id: str, timeout: float = TIMEOUT_RAG_C
                 context_parts.append(f"\n[{created_at}]\n{text_preview}")
 
         context_str = "\n".join(context_parts)
-        logger.info(f"Loaded conversation context for ward {ward_id}: {len(recent_context)} chunks")
+        logger.info(
+            f"Loaded conversation context for ward {ward_id}: {len(recent_context)} chunks"
+        )
 
         return context_str
 
     except asyncio.TimeoutError:
         # Timeout is expected - don't block session start
-        logger.warning(f"RAG context load timed out after {timeout}s for ward {ward_id}, continuing without context")
+        logger.warning(
+            f"RAG context load timed out after {timeout}s for ward {ward_id}, continuing without context"
+        )
         return ""
     except Exception as e:
         # Any other error - continue without context
@@ -190,10 +193,12 @@ async def entrypoint(ctx: JobContext):
     ward_id = ward_id or extract_ward_id(ctx.room)
 
     # Determine call direction
-    is_outbound = ctx.room.name.startswith('bot-')
+    is_outbound = ctx.room.name.startswith("bot-")
     call_direction = CallDirection.OUTBOUND if is_outbound else CallDirection.INBOUND
 
-    logger.info(f"Session info: ward_id={ward_id}, call_id={call_id}, direction={call_direction}")
+    logger.info(
+        f"Session info: ward_id={ward_id}, call_id={call_id}, direction={call_direction}"
+    )
 
     # Note: Greeting pre-warm now happens in backend when user requests token
     # See: ops-api/src/rtc/rtc-token.service.ts (generatePersonalizedGreeting)
@@ -214,7 +219,9 @@ async def entrypoint(ctx: JobContext):
     ward_context = ""
     try:
         # Try to load context with short timeout to avoid delaying session start
-        ward_context = await load_conversation_context(ward_id, timeout=TIMEOUT_RAG_CONTEXT_WARMUP)
+        ward_context = await load_conversation_context(
+            ward_id, timeout=TIMEOUT_RAG_CONTEXT_WARMUP
+        )
     except Exception as e:
         # If context loading fails for any reason, continue without it
         logger.warning(f"Context loading failed, starting agent without context: {e}")
@@ -281,30 +288,6 @@ async def entrypoint(ctx: JobContext):
     def on_session_end(report):
         session_end_handler.handle_session_end(report)
 
-    # Pipeline timing metrics
-    pipeline_logger = logging.getLogger("pipeline.metrics")
-    pipeline_times = {}
-
-    @session.on("user_input_transcribed")
-    def on_transcribed(ev):
-        pipeline_times["stt_end"] = time.time()
-
-    @session.on("metrics_collected")
-    def on_metrics(ev: MetricsCollectedEvent):
-        m = ev.metrics
-        if isinstance(m, LLMMetrics):
-            pipeline_times["llm"] = m.duration
-            pipeline_logger.info(f"[LLM] ttft={m.ttft:.3f}s total={m.duration:.3f}s tokens={m.completion_tokens}")
-        elif isinstance(m, TTSMetrics):
-            pipeline_times["tts"] = m.duration
-            pipeline_logger.info(f"[TTS] ttfb={m.ttfb:.3f}s total={m.duration:.3f}s")
-            # Calculate total pipeline and derive STT time
-            total = time.time() - pipeline_times.get("stt_end", time.time())
-            llm_time = pipeline_times.get("llm", 0)
-            tts_time = pipeline_times.get("tts", 0)
-            stt_time = max(0, total - llm_time - tts_time)
-            pipeline_logger.info(f"[PIPELINE] stt={stt_time:.3f}s llm={llm_time:.3f}s tts={tts_time:.3f}s total={total:.3f}s")
-
     # Register takeover handlers
     takeover_handler.register_event_handlers()
 
@@ -315,8 +298,28 @@ async def entrypoint(ctx: JobContext):
     # Create and start agent with conversation context
     agent = ElderlyCompanionAgent(
         ward_context=ward_context,  # Empty string if RAG failed/timed out
-        call_direction=call_direction
+        call_direction=call_direction,
     )
+
+    # VAD timing: track when user starts/stops speaking
+    pipeline_timing_logger = logging.getLogger("PIPELINE_TIMING")
+
+    @session.on("user_state_changed")
+    def on_user_state_changed(ev):
+        """Track VAD timing when user speech state changes."""
+        if ev.new_state == "speaking":
+            # User started speaking - clear previous turn's timing and start fresh
+            # This prevents race conditions when user speaks while TTS is still finishing
+            agent._pipeline_times.clear()
+            agent._pipeline_times["vad_start"] = time.time()
+        elif ev.old_state == "speaking":
+            # User stopped speaking - VAD detected end of speech
+            vad_end = time.time()
+            agent._pipeline_times["vad_end"] = vad_end  # For STT timing
+            vad_start = agent._pipeline_times.get("vad_start")
+            if vad_start:
+                vad_duration = vad_end - vad_start
+                agent._pipeline_times["vad_duration"] = vad_duration
 
     # Start takeover polling in background
     takeover_task = _create_task_logged(
@@ -345,7 +348,9 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"Session ended for call: {call_id}")
 
     # Make sure pending transcript publications finish before call end
-    logger.info("Waiting for transcript publications to complete before publishing call_end")
+    logger.info(
+        "Waiting for transcript publications to complete before publishing call_end"
+    )
     await transcript_handler.wait_for_pending_publications(timeout=10.0)
 
     try:
