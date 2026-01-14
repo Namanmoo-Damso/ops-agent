@@ -226,6 +226,8 @@ class ElderlyCompanionAgent(Agent):
                 logger.info(
                     f"[greeting] Adding personalized content: {additional_content[:50]}..."
                 )
+                # Remove leading dot and whitespace (e.g., ". 안녕하세요") using regex
+                additional_content = additional_content.strip().lstrip(".").strip()
                 # Say the additional personalized content
                 self.session.say(additional_content, allow_interruptions=True)
             else:
@@ -326,7 +328,8 @@ class ElderlyCompanionAgent(Agent):
             "- You MUST respond: ONLY in Korean (한국어) using respectful 존댓말\n"
             "- NEVER respond in English - ALWAYS Korean\n"
             "- Example correct: '안녕하세요, 어르신'\n"
-            "- Example WRONG: 'Hello' or any English\n\n"
+            "- Example WRONG: 'Hello' or any English\n"
+            "- NEVER read special characters explicitely.\n\n"
         )
 
         memory_instruction = (
