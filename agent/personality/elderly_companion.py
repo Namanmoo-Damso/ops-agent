@@ -1,19 +1,20 @@
 """Elderly Companion Agent - 어르신 돌봄 AI 에이전트."""
+
 import asyncio
 import logging
 import time
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Optional
-
-from livekit.agents import Agent, RunContext, function_tool
-from pydantic import Field
+from typing import Annotated, AsyncIterable, Optional
 
 from constants import (
     AGENT_TZINFO,
     TIMEOUT_GREETING_FETCH,
     TIMEOUT_RAG_SEARCH_QUICK,
 )
+from livekit import rtc
+from livekit.agents import Agent, ModelSettings, RunContext, function_tool, llm, stt
+from pydantic import Field
 from rag_client import (
     extract_result_text,
     extract_result_time_label,
@@ -23,11 +24,13 @@ from services.redis_pubsub import subscribe_to_greeting
 from userdata import SessionUserdata
 
 logger = logging.getLogger(__name__)
+pipeline_timing_logger = logging.getLogger("PIPELINE_TIMING")
 
 
 class CallDirection(str, Enum):
     """Call direction types."""
-    INBOUND = "inbound"   # User calls agent
+
+    INBOUND = "inbound"  # User calls agent
     OUTBOUND = "outbound"  # Agent calls user
 
 
@@ -53,9 +56,99 @@ class ElderlyCompanionAgent(Agent):
             call_direction: "inbound" or "outbound"
         """
         self.call_direction = call_direction
+        # Pipeline timing metrics (VAD-STT-RAG-LLM-TTS)
+        self._pipeline_times: dict = {}
         super().__init__(
             instructions=self._build_instructions(ward_context, call_direction),
         )
+
+    async def stt_node(
+        self, audio: AsyncIterable[rtc.AudioFrame], model_settings: ModelSettings
+    ) -> Optional[AsyncIterable[stt.SpeechEvent]]:
+        """Override STT node to measure STT timing."""
+        # Get the default STT events stream
+        events = Agent.default.stt_node(self, audio, model_settings)
+        if events is None:
+            pipeline_timing_logger.warning("STT node returned None - no STT configured")
+            return None
+
+        # Wrap the events stream to add timing
+        async def timed_stt_events():
+            try:
+                async for event in events:
+                    if hasattr(event, "type"):
+                        event_type = str(event.type)
+
+                        # Record STT duration when we get final transcript
+                        # Use VAD end time as reference (when user stopped speaking)
+                        # This measures actual STT processing time, not speech duration
+                        if "final" in event_type.lower():
+                            vad_end = self._pipeline_times.get("vad_end")
+                            if vad_end:
+                                stt_duration = time.time() - vad_end
+                                self._pipeline_times["stt_duration"] = stt_duration
+                                # Clear vad_end after recording to prevent duplicate STT events
+                                # from calculating cumulative time from the same vad_end
+                                del self._pipeline_times["vad_end"]
+
+                    yield event
+            except Exception as e:
+                pipeline_timing_logger.error(f"STT error: {e}")
+                raise
+
+        return timed_stt_events()
+
+    async def llm_node(
+        self,
+        chat_ctx: llm.ChatContext,
+        tools: list,
+        model_settings: ModelSettings,
+    ) -> AsyncIterable[llm.ChatChunk]:
+        """Override LLM node to measure LLM timing."""
+        llm_start = time.time()
+        self._pipeline_times["llm_start"] = llm_start
+        first_chunk = True
+
+        async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
+            if first_chunk:
+                ttft = time.time() - llm_start
+                self._pipeline_times["llm_ttft"] = ttft
+                first_chunk = False
+            yield chunk
+
+        llm_duration = time.time() - llm_start
+        self._pipeline_times["llm_duration"] = llm_duration
+
+    async def tts_node(
+        self, text: AsyncIterable[str], model_settings: ModelSettings
+    ) -> AsyncIterable[rtc.AudioFrame]:
+        """Override TTS node to measure TTS timing and log pipeline summary."""
+        tts_start = time.time()
+        self._pipeline_times["tts_start"] = tts_start
+        first_frame = True
+
+        async for frame in Agent.default.tts_node(self, text, model_settings):
+            if first_frame:
+                ttfb = time.time() - tts_start
+                self._pipeline_times["tts_ttfb"] = ttfb
+                first_frame = False
+            yield frame
+
+        tts_duration = time.time() - tts_start
+        self._pipeline_times["tts_duration"] = tts_duration
+
+        # Log full pipeline summary
+        vad = self._pipeline_times.get("vad_duration", 0)
+        stt = self._pipeline_times.get("stt_duration", 0)
+        rag = self._pipeline_times.get("rag_duration", 0)
+        llm_time = self._pipeline_times.get("llm_duration", 0)
+        tts_time = self._pipeline_times.get("tts_duration", 0)
+        total = vad + stt + rag + llm_time + tts_time
+        pipeline_timing_logger.info(
+            f"TOTAL={total:.3f}s | VAD={vad:.3f}s STT={stt:.3f}s RAG={rag:.3f}s LLM={llm_time:.3f}s TTS={tts_time:.3f}s"
+        )
+        # Note: _pipeline_times is cleared at VAD start (when user starts speaking)
+        # to prevent race conditions when turns overlap
 
     async def on_enter(self) -> None:
         """
@@ -69,10 +162,12 @@ class ElderlyCompanionAgent(Agent):
         This ensures zero-latency first response while receiving RAG-enhanced greeting
         when the backend is ready.
         """
-        logger.info(f"ElderlyCompanionAgent entering with direction={self.call_direction}")
+        logger.info(
+            f"ElderlyCompanionAgent entering with direction={self.call_direction}"
+        )
 
         # Check if session is initialized
-        if not hasattr(self, 'session') or self.session is None:
+        if not hasattr(self, "session") or self.session is None:
             logger.error("Session not initialized in on_enter")
             return
 
@@ -83,7 +178,9 @@ class ElderlyCompanionAgent(Agent):
             fallback_greeting = GREETING_INBOUND
 
         # 📡 Hybrid Pull/Push approach for personalized greeting
-        if hasattr(self.session, 'userdata') and hasattr(self.session.userdata, 'ward_id'):
+        if hasattr(self.session, "userdata") and hasattr(
+            self.session.userdata, "ward_id"
+        ):
             ward_id = self.session.userdata.ward_id
             logger.info(
                 f"[greeting] Checking for personalized greeting (ward={ward_id})"
@@ -100,7 +197,9 @@ class ElderlyCompanionAgent(Agent):
                 )
                 greeting_received.set()
                 # Say the full cached greeting immediately
-                logger.info(f"[greeting] Using cached greeting in full: {personalized_greeting[:50]}...")
+                logger.info(
+                    f"[greeting] Using cached greeting in full: {personalized_greeting[:50]}..."
+                )
                 self.session.say(personalized_greeting, allow_interruptions=False)
 
             async def on_greeting_pubsub(personalized_greeting: str) -> None:
@@ -153,7 +252,7 @@ class ElderlyCompanionAgent(Agent):
             self.session.say(fallback_greeting, allow_interruptions=False)
             return
         if not client:
-            logger.warning(f"[greeting] Redis unavailable, using static greeting")
+            logger.warning("[greeting] Redis unavailable, using static greeting")
             self.session.say(fallback_greeting, allow_interruptions=False)
             return
 
@@ -169,7 +268,7 @@ class ElderlyCompanionAgent(Agent):
             logger.error(f"[greeting] Error checking cache: {e}")
 
         # Cache miss - say static greeting first, then wait for Pub/Sub
-        logger.info(f"[greeting] No cached greeting, saying static greeting first")
+        logger.info("[greeting] No cached greeting, saying static greeting first")
         try:
             self.session.say(fallback_greeting, allow_interruptions=False)
         except Exception as e:
@@ -193,7 +292,9 @@ class ElderlyCompanionAgent(Agent):
             personalized_greeting: Full greeting text from backend RAG service
         """
         try:
-            logger.info(f"[greeting] Received via Pub/Sub (length={len(personalized_greeting)})")
+            logger.info(
+                f"[greeting] Received via Pub/Sub (length={len(personalized_greeting)})"
+            )
 
             # Determine what static greeting was already said
             if self.call_direction == CallDirection.OUTBOUND:
@@ -202,24 +303,36 @@ class ElderlyCompanionAgent(Agent):
                 static_greeting = GREETING_INBOUND
 
             # Skip if it's identical to what we already said (after normalization)
-            if self._normalize_greeting(personalized_greeting) == self._normalize_greeting(static_greeting):
+            if self._normalize_greeting(
+                personalized_greeting
+            ) == self._normalize_greeting(static_greeting):
                 logger.info("[greeting] Personalized greeting same as static, skipping")
                 return
 
             # Extract additional content (remove static prefix if present)
-            additional_content = self._extract_additional_content(personalized_greeting, static_greeting)
+            additional_content = self._extract_additional_content(
+                personalized_greeting, static_greeting
+            )
 
             if additional_content:
-                logger.info(f"[greeting] Adding personalized content: {additional_content[:50]}...")
+                logger.info(
+                    f"[greeting] Adding personalized content: {additional_content[:50]}..."
+                )
+                # Remove leading dot and whitespace (e.g., ". 안녕하세요") using regex
+                additional_content = additional_content.strip().lstrip(".").strip()
                 # Say the additional personalized content
                 self.session.say(additional_content, allow_interruptions=True)
             else:
                 logger.info("[greeting] No additional content to add")
 
         except Exception as e:
-            logger.error(f"[greeting] Error processing received greeting: {e}", exc_info=True)
+            logger.error(
+                f"[greeting] Error processing received greeting: {e}", exc_info=True
+            )
 
-    def _extract_additional_content(self, full_greeting: str, static_part: str) -> Optional[str]:
+    def _extract_additional_content(
+        self, full_greeting: str, static_part: str
+    ) -> Optional[str]:
         """
         Extract additional personalized content from full greeting.
 
@@ -240,14 +353,14 @@ class ElderlyCompanionAgent(Agent):
 
         # Strategy 1: Remove exact static prefix
         if full_greeting.startswith(static_part):
-            additional = full_greeting[len(static_part):].strip()
+            additional = full_greeting[len(static_part) :].strip()
             if additional and len(additional) > 5:  # Meaningful content
                 if self._normalize_greeting(additional) != static_part:
                     return additional
 
         # Strategy 2: Split by sentence and remove first if it's static greeting
         # Handle various sentence endings including Korean punctuation
-        for delimiter in ['. ', '。 ', '. ', '.\n', '! ', '? ', '！ ', '？ ']:
+        for delimiter in [". ", "。 ", ". ", ".\n", "! ", "? ", "！ ", "？ "]:
             if delimiter in full_greeting:
                 sentences = full_greeting.split(delimiter, 1)
                 if len(sentences) >= 2:
@@ -255,8 +368,15 @@ class ElderlyCompanionAgent(Agent):
                     rest = sentences[1].strip()
 
                     # If first sentence matches static greeting, use rest
-                    if first_sentence == static_part or first_sentence + '.' == static_part:
-                        if rest and len(rest) > 5 and self._normalize_greeting(rest) != static_part:
+                    if (
+                        first_sentence == static_part
+                        or first_sentence + "." == static_part
+                    ):
+                        if (
+                            rest
+                            and len(rest) > 5
+                            and self._normalize_greeting(rest) != static_part
+                        ):
                             return rest
 
         # Strategy 3: If full greeting is completely different, use it
@@ -275,18 +395,20 @@ class ElderlyCompanionAgent(Agent):
         - Collapse double spaces
         """
         normalized = text.strip().lower()
-        while normalized.endswith(('.', '!', '?', '，', '？', '！', '…')):
+        while normalized.endswith((".", "!", "?", "，", "？", "！", "…")):
             normalized = normalized[:-1].strip()
         normalized = " ".join(normalized.split())
         return normalized
 
-    def _build_instructions(self, ward_context: str = "", call_direction: str = "inbound") -> str:
+    def _build_instructions(
+        self, ward_context: str = "", call_direction: str = "inbound"
+    ) -> str:
         """Build agent instructions with optional context and current time."""
         tz = AGENT_TZINFO
         local_now = datetime.now(tz)
         current_time_kst = local_now.strftime("%Y년 %m월 %d일 %H시 %M분")
         current_date_kst = local_now.strftime("%Y년 %m월 %d일")
-        
+
         base = (
             "You are a warm, caring AI companion for elderly Korean users.\n"
             "Your name is '소담' (Sodam).\n\n"
@@ -298,7 +420,8 @@ class ElderlyCompanionAgent(Agent):
             "- You MUST respond: ONLY in Korean (한국어) using respectful 존댓말\n"
             "- NEVER respond in English - ALWAYS Korean\n"
             "- Example correct: '안녕하세요, 어르신'\n"
-            "- Example WRONG: 'Hello' or any English\n\n"
+            "- Example WRONG: 'Hello' or any English\n"
+            "- NEVER read special characters explicitely.\n\n"
         )
 
         memory_instruction = (
@@ -314,10 +437,7 @@ class ElderlyCompanionAgent(Agent):
 
         context_section = ""
         if ward_context:
-            context_section = (
-                "# 어르신 정보 (참고용)\n"
-                f"{ward_context}\n\n"
-            )
+            context_section = f"# 어르신 정보 (참고용)\n{ward_context}\n\n"
 
         output_rules = (
             "# Output rules\n"
@@ -361,7 +481,9 @@ class ElderlyCompanionAgent(Agent):
         context: RunContext[SessionUserdata],
         query: Annotated[
             str,
-            Field(description="검색할 키워드나 주제 (예: '손자', '병원', '약', '가족')"),
+            Field(
+                description="검색할 키워드나 주제 (예: '손자', '병원', '약', '가족')"
+            ),
         ],
     ) -> str:
         """
@@ -379,6 +501,7 @@ class ElderlyCompanionAgent(Agent):
         Returns:
             Retrieved memory context with parent context or message if not found
         """
+        rag_start = time.time()
         rag_client = get_shared_rag_client(timeout=TIMEOUT_RAG_SEARCH_QUICK)
         ward_id = context.userdata.ward_id
 
@@ -390,6 +513,10 @@ class ElderlyCompanionAgent(Agent):
                 query=query,
                 limit=3,  # Top 3 for quick recall
             )
+            # Record RAG timing
+            rag_duration = time.time() - rag_start
+            self._pipeline_times["rag_duration"] = rag_duration
+            pipeline_timing_logger.info(f"RAG={rag_duration:.3f}s")
 
             if not results:
                 return "관련된 과거 대화가 없습니다."
