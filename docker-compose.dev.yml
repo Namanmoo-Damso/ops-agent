@@ -1,0 +1,30 @@
+services:
+  agent:
+    build: .
+    env_file: ./agent.env
+    network_mode: host
+    restart: unless-stopped
+    command: ["python", "agent/agent.py", "start"]
+    volumes:
+      - .:/app
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f agent.py || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  transcript-storage:
+    build: .
+    env_file: ./agent.env
+    network_mode: host
+    restart: unless-stopped
+    command: ["python", "agent/storage/transcript_listener.py"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f transcript_listener.py || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - agent

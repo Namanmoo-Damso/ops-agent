@@ -1,0 +1,53 @@
+name: AI PR Review
+
+on:
+  pull_request:
+    types: [opened]
+    branches:
+      - dev
+
+# 권한 부여
+permissions:
+  id-token: write # AWS OIDC 인증; access key 대신 사용하는 안전한 방식. aws IAM에서 role을 생성하여 사용
+  contents: read # 코드에 접근하기
+  pull-requests: write # PR에 코멘트 달기
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 현재 PR 대상 코드를 체크아웃 (경로 지정)
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: target-repo # 현재 레포지토리를 'target-repo' 폴더에 받음
+
+      # 2. 스크립트가 있는 중앙 레포지토리를 체크아웃
+      - name: Checkout Review Scripts Repo
+        uses: actions/checkout@v4
+        with:
+          repository: Namanmoo-Damso/infra # 스크립트가 있는 중앙 레포지토리 주소
+          path: infra-repo # 스크립트를 'infra-scripts' 폴더에 받음
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install boto3 requests
+
+      - name: Run AI Review
+        # 아래에서 지정한 key-value를 실행하려는 스크립트 내에서 환경 변수로 접근할 수 있다
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 이 토큰은 자동 발급되는 토큰. 위에서 permissions에 지정한 권한 및 기본 권한이 들어있다.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: python infra-repo/cicd/scripts/ai-review.py
