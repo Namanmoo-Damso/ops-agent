@@ -28,6 +28,7 @@ def validate_env_vars() -> dict[str, str]:
         "AWS_SECRET_ACCESS_KEY",
         "AWS_DEFAULT_REGION",
         "REDIS_URL",
+        "KMA_MCP_URL",
     ]
 
     missing_vars = []
@@ -66,6 +67,13 @@ def validate_env_vars() -> dict[str, str]:
     if not aws_key.startswith("AKIA"):
         raise ConfigError(
             "AWS_ACCESS_KEY_ID appears invalid (should start with 'AKIA')"
+        )
+
+    # Validate KMA MCP URL format
+    kma_mcp_url = config["KMA_MCP_URL"]
+    if not (kma_mcp_url.startswith("http://") or kma_mcp_url.startswith("https://")):
+        raise ConfigError(
+            f"KMA_MCP_URL must start with http:// or https://, got: {kma_mcp_url}"
         )
 
     return config

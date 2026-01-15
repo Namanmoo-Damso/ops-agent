@@ -45,22 +45,28 @@ class ElderlyCompanionAgent(
         self,
         ward_context: str = "",
         call_direction: Union[CallDirection, str] = CallDirection.INBOUND,
-    ):
+        latitude: float | None = None,
+        longitude: float | None = None,
+    ) -> None:
         """
         Initialize the agent.
 
         Args:
             ward_context: Pre-fetched context about the ward (optional)
             call_direction: "inbound" or "outbound"
+            latitude: Ward's current location latitude (for weather tools)
+            longitude: Ward's current location longitude (for weather tools)
         """
-        # Build instructions with persona
-        instructions = self._build_instructions(ward_context, call_direction)
+        # Build instructions with persona (including location if available)
+        instructions = self._build_instructions(
+            ward_context, call_direction, latitude, longitude
+        )
 
-        # Initialize Agent with instructions
+        # Initialize via mixin chain
         super().__init__(
-            instructions=instructions,
             ward_context=ward_context,
             call_direction=call_direction,
+            instructions=instructions,
         )
 
         logger.info(
