@@ -92,11 +92,11 @@ class MemoryToolMixin:
             pipeline_timing_logger.info(f"RAG={rag_duration:.3f}s")
 
             if not results:
-                return "기록을 살펴봤는데 따로 말씀해 주신 적은 없으신 것 같아요."
+                return "기록을 찾아봤지만 관련된 대화가 없었어요."
 
             orchestrator = RagOrchestrator()
             return orchestrator.process_results(results)
 
         except Exception as e:
             logger.error(f"RAG search error: {e}")
-            return "잠시 기억을 떠올리는 데 문제가 생겼어요."
+            return "기억을 불러오는 중 오류가 발생했어요. 잠시 후 다시 말씀해 주세요."

@@ -154,5 +154,10 @@ class ContextFormatter:
             
             months = days // 30
             return f"약 {months}개월 전"
-        except Exception:
+        except Exception as error:
+            logger.debug(
+                "Failed to parse relative time for date=%s: %s",
+                date_str,
+                error,
+            )
             return ""

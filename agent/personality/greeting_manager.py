@@ -8,12 +8,15 @@ import asyncio
 import logging
 import time
 from enum import Enum
-from typing import Callable, Optional, Protocol
+from typing import Callable, Optional, Protocol, Union
 
 from constants import TIMEOUT_GREETING_FETCH
 from services.redis_pubsub import subscribe_to_greeting
 
 logger = logging.getLogger(__name__)
+
+MIN_ADDITIONAL_CONTENT_LENGTH = 6
+MIN_FULL_GREETING_EXTRA_CHARS = 10
 
 class SessionUserdataLike(Protocol):
     """Minimal session userdata shape needed for greeting flow."""
@@ -47,18 +50,29 @@ class GreetingManagerMixin:
 
     session: Optional[AgentSessionLike]
 
-    def __init__(self, *args, call_direction: str = "inbound", **kwargs):
+    def __init__(
+        self,
+        *args,
+        call_direction: Union[CallDirection, str] = CallDirection.INBOUND,
+        **kwargs,
+    ):
         """call_direction 초기화."""
         super().__init__(*args, **kwargs)
-        self.call_direction = (
-            CallDirection.OUTBOUND
-            if call_direction == "outbound"
-            else CallDirection.INBOUND
-        )
+        if isinstance(call_direction, CallDirection):
+            self.call_direction = call_direction
+        else:
+            self.call_direction = (
+                CallDirection.OUTBOUND
+                if call_direction == CallDirection.OUTBOUND.value
+                else CallDirection.INBOUND
+            )
 
     async def on_enter(self) -> None:
         """Agent enters session - Push-based greeting approach."""
-        logger.info(f"ElderlyCompanionAgent entering with direction={self.call_direction}")
+        logger.info(
+            "ElderlyCompanionAgent entering with direction=%s",
+            self.call_direction.value,
+        )
 
         session = getattr(self, "session", None)
         if session is None:
@@ -174,7 +188,11 @@ class GreetingManagerMixin:
 
         if full_norm.startswith(static_norm):
             additional = full_norm[len(static_norm):].strip()
-            if additional and len(additional) > 5 and self._normalize_greeting(additional) != static_norm:
+            if (
+                additional
+                and len(additional) >= MIN_ADDITIONAL_CONTENT_LENGTH
+                and self._normalize_greeting(additional) != static_norm
+            ):
                 return additional
 
         for delimiter in [". ", "。 ", ". ", ".\n", "! ", "? ", "！ ", "？ "]:
@@ -184,10 +202,17 @@ class GreetingManagerMixin:
                     first_sentence = sentences[0].strip()
                     rest = sentences[1].strip()
                     if first_sentence == static_norm or first_sentence + "." == static_norm:
-                        if rest and len(rest) > 5 and self._normalize_greeting(rest) != static_norm:
+                        if (
+                            rest
+                            and len(rest) >= MIN_ADDITIONAL_CONTENT_LENGTH
+                            and self._normalize_greeting(rest) != static_norm
+                        ):
                             return rest
 
-        if full_norm != static_norm and len(full_norm) > len(static_norm) + 10:
+        if (
+            full_norm != static_norm
+            and len(full_norm) > len(static_norm) + MIN_FULL_GREETING_EXTRA_CHARS
+        ):
             return full_norm
 
         return None

@@ -9,6 +9,7 @@ ElderlyCompanionAgent - 어르신 돌봄 AI 에이전트
 """
 
 import logging
+from typing import Union
 
 from livekit.agents import Agent
 
@@ -40,7 +41,11 @@ class ElderlyCompanionAgent(
     - MemoryToolMixin: RAG 기반 기억 검색 도구
     """
 
-    def __init__(self, ward_context: str = "", call_direction: str = "inbound"):
+    def __init__(
+        self,
+        ward_context: str = "",
+        call_direction: Union[CallDirection, str] = CallDirection.INBOUND,
+    ):
         """
         Initialize the agent.
 
@@ -52,17 +57,13 @@ class ElderlyCompanionAgent(
         instructions = self._build_instructions(ward_context, call_direction)
 
         # Initialize Agent with instructions
-        super().__init__(instructions=instructions)
-
-        # Store for later use
-        self._ward_context = ward_context
-        self.call_direction = (
-            CallDirection.OUTBOUND
-            if call_direction == "outbound"
-            else CallDirection.INBOUND
+        super().__init__(
+            instructions=instructions,
+            ward_context=ward_context,
+            call_direction=call_direction,
         )
 
         logger.info(
             f"ElderlyCompanionAgent initialized: "
-            f"direction={call_direction}, context_len={len(ward_context)}"
+            f"direction={self.call_direction.value}, context_len={len(ward_context)}"
         )

@@ -8,10 +8,12 @@ PersonaManager - 페르소나/시스템 프롬프트 생성
 """
 
 import logging
+from typing import Union
 from datetime import datetime
 
 from constants import AGENT_TZINFO
 from rag.orchestrator import RagOrchestrator
+from .greeting_manager import CallDirection
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,11 @@ class PersonaManagerMixin:
         super().__init__(*args, **kwargs)
         self._ward_context = ward_context
 
-    def _build_instructions(self, ward_context: str = "", call_direction: str = "inbound") -> str:
+    def _build_instructions(
+        self,
+        ward_context: str = "",
+        call_direction: Union[CallDirection, str] = CallDirection.INBOUND,
+    ) -> str:
         """Build agent instructions with context and current time."""
         tz = AGENT_TZINFO
         local_now = datetime.now(tz)
