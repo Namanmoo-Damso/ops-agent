@@ -20,7 +20,7 @@ class AgentMetricsMixin:
     def __init__(self, *args, **kwargs):
         """pipeline_times 딕셔너리 초기화."""
         super().__init__(*args, **kwargs)
-        self._pipeline_times: dict = {}
+        self._pipeline_times: dict[str, float] = {}
 
     async def stt_node(
         self, audio: AsyncIterable[rtc.AudioFrame], model_settings: ModelSettings

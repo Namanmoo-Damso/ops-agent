@@ -26,6 +26,18 @@ pipeline_timing_logger = logging.getLogger("PIPELINE_TIMING")
 class MemoryToolMixin:
     """search_memory 도구를 제공하는 Mixin."""
 
+    def _get_pipeline_times(self) -> dict[str, float]:
+        """
+        Ensure _pipeline_times exists even when AgentMetricsMixin is not mixed in.
+        """
+        pipeline_times = getattr(self, "_pipeline_times", None)
+        if isinstance(pipeline_times, dict):
+            return pipeline_times
+
+        pipeline_times = {}
+        setattr(self, "_pipeline_times", pipeline_times)
+        return pipeline_times
+
     @function_tool
     async def search_memory(
         self,
@@ -75,7 +87,8 @@ class MemoryToolMixin:
                 limit=3,
             )
             rag_duration = time.time() - rag_start
-            self._pipeline_times["rag_duration"] = rag_duration
+            pipeline_times = self._get_pipeline_times()
+            pipeline_times["rag_duration"] = rag_duration
             pipeline_timing_logger.info(f"RAG={rag_duration:.3f}s")
 
             if not results:

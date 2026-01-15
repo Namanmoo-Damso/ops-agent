@@ -8,12 +8,26 @@ import asyncio
 import logging
 import time
 from enum import Enum
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol
 
 from constants import TIMEOUT_GREETING_FETCH
 from services.redis_pubsub import subscribe_to_greeting
 
 logger = logging.getLogger(__name__)
+
+class SessionUserdataLike(Protocol):
+    """Minimal session userdata shape needed for greeting flow."""
+
+    ward_id: str
+
+
+class AgentSessionLike(Protocol):
+    """Minimal session interface used by GreetingManagerMixin."""
+
+    userdata: SessionUserdataLike
+
+    def say(self, text: str, allow_interruptions: bool) -> None:
+        ...
 
 
 class CallDirection(Enum):
@@ -31,6 +45,8 @@ GREETING_INBOUND = "네, 여보세요. 소담입니다."
 class GreetingManagerMixin:
     """인사말 관리를 위한 Mixin 클래스."""
 
+    session: Optional[AgentSessionLike]
+
     def __init__(self, *args, call_direction: str = "inbound", **kwargs):
         """call_direction 초기화."""
         super().__init__(*args, **kwargs)
@@ -44,7 +60,8 @@ class GreetingManagerMixin:
         """Agent enters session - Push-based greeting approach."""
         logger.info(f"ElderlyCompanionAgent entering with direction={self.call_direction}")
 
-        if not hasattr(self, "session") or self.session is None:
+        session = getattr(self, "session", None)
+        if session is None:
             logger.error("Session not initialized in on_enter")
             return
 
@@ -54,8 +71,8 @@ class GreetingManagerMixin:
             else GREETING_INBOUND
         )
 
-        if hasattr(self.session, "userdata") and hasattr(self.session.userdata, "ward_id"):
-            ward_id = self.session.userdata.ward_id
+        if hasattr(session, "userdata") and hasattr(session.userdata, "ward_id"):
+            ward_id = session.userdata.ward_id
             logger.info(f"[greeting] Checking for personalized greeting (ward={ward_id})")
 
             greeting_received = asyncio.Event()
@@ -65,7 +82,7 @@ class GreetingManagerMixin:
                 elapsed = time.monotonic() - start_time
                 logger.info(f"[greeting] From cache after {elapsed:.2f}s (ward={ward_id})")
                 greeting_received.set()
-                self.session.say(personalized_greeting, allow_interruptions=False)
+                session.say(personalized_greeting, allow_interruptions=False)
 
             async def on_greeting_pubsub(personalized_greeting: str) -> None:
                 elapsed = time.monotonic() - start_time
@@ -79,7 +96,7 @@ class GreetingManagerMixin:
             )
         else:
             logger.warning("Ward ID not available, using static greeting only")
-            self.session.say(fallback_greeting, allow_interruptions=False)
+            session.say(fallback_greeting, allow_interruptions=False)
 
     async def _fetch_greeting_hybrid(
         self, ward_id: str, fallback_greeting: str, on_cached: Callable, on_pubsub: Callable
@@ -87,16 +104,21 @@ class GreetingManagerMixin:
         """Fetch greeting using hybrid Pull/Push approach."""
         from services.redis_pubsub import get_redis_client
 
+        session = getattr(self, "session", None)
+        if session is None:
+            logger.error("Session not initialized in greeting fetch")
+            return
+
         try:
             client = await get_redis_client()
         except Exception as e:
             logger.error(f"[greeting] Redis client init failed: {e}")
-            self.session.say(fallback_greeting, allow_interruptions=False)
+            session.say(fallback_greeting, allow_interruptions=False)
             return
 
         if not client:
             logger.warning("[greeting] Redis unavailable, using static greeting")
-            self.session.say(fallback_greeting, allow_interruptions=False)
+            session.say(fallback_greeting, allow_interruptions=False)
             return
 
         cache_key = f"rag:greeting:ward:{ward_id}"
@@ -110,7 +132,7 @@ class GreetingManagerMixin:
 
         logger.info("[greeting] No cached greeting, saying static greeting first")
         try:
-            self.session.say(fallback_greeting, allow_interruptions=False)
+            session.say(fallback_greeting, allow_interruptions=False)
         except Exception as e:
             logger.error(f"[greeting] Failed to deliver static greeting: {e}")
 
@@ -120,6 +142,10 @@ class GreetingManagerMixin:
         """Process personalized greeting from Pub/Sub."""
         try:
             logger.info(f"[greeting] Received via Pub/Sub (length={len(personalized_greeting)})")
+            session = getattr(self, "session", None)
+            if session is None:
+                logger.error("Session not initialized when greeting received")
+                return
 
             static_greeting = (
                 GREETING_OUTBOUND
@@ -135,7 +161,7 @@ class GreetingManagerMixin:
             if additional_content:
                 additional_content = additional_content.strip().lstrip(".").strip()
                 logger.info(f"[greeting] Adding: {additional_content[:50]}...")
-                self.session.say(additional_content, allow_interruptions=True)
+                session.say(additional_content, allow_interruptions=True)
             else:
                 logger.info("[greeting] No additional content to add")
         except Exception as e:
