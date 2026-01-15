@@ -30,19 +30,32 @@ class PersonaManagerMixin:
         self,
         ward_context: str = "",
         call_direction: Union[CallDirection, str] = CallDirection.INBOUND,
+        latitude: float | None = None,
+        longitude: float | None = None,
     ) -> str:
-        """Build agent instructions with context and current time."""
+        """Build agent instructions with context, current time, and location."""
         tz = AGENT_TZINFO
         local_now = datetime.now(tz)
         current_time_kst = local_now.strftime("%Y년 %m월 %d일 %H시 %M분")
         current_date_kst = local_now.strftime("%Y년 %m월 %d일")
 
         base = self._build_base_prompt(current_time_kst, current_date_kst)
+
+        # Add location information if available
+        location_section = ""
+        if latitude is not None and longitude is not None:
+            location_section = (
+                f"# 어르신 위치 정보\n"
+                f"- 위도(latitude): {latitude}\n"
+                f"- 경도(longitude): {longitude}\n"
+                f"- 날씨 조회 시 이 좌표를 사용하세요\n\n"
+            )
+
         memory_instruction = RagOrchestrator.get_enhanced_instructions()
         context_section = f"# 어르신 정보 (참고용)\n{ward_context}\n\n" if ward_context else ""
         output_rules = self._build_output_rules()
 
-        return base + memory_instruction + context_section + output_rules
+        return base + location_section + memory_instruction + context_section + output_rules
 
     def _build_base_prompt(self, current_time: str, current_date: str) -> str:
         """기본 시스템 프롬프트 생성."""

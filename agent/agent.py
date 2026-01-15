@@ -27,6 +27,7 @@ from livekit.agents import (
     JobContext,
     JobProcess,
     cli,
+    mcp,
     room_io,
 )
 from livekit.plugins import aws, silero
@@ -39,6 +40,9 @@ from userdata import SessionUserdata
 
 # Agent name for routing
 AGENT_NAME = os.getenv("AGENT_NAME", "voice-agent")
+
+# KMA MCP Server URL (localhost since using host network mode)
+KMA_MCP_URL = os.getenv("KMA_MCP_URL")
 
 # Skip validation for download-files command (used during Docker build)
 _is_download_command = "download-files" in sys.argv
@@ -183,11 +187,24 @@ async def entrypoint(ctx: JobContext):
     ward_id = metadata.get("wardId")
 
     # Fetch call context if needed
+    latitude: float | None = None
+    longitude: float | None = None
     if not call_id and room_name:
         context = await fetch_call_context(room_name)
         if context:
             call_id = context.get("callId") or call_id
             ward_id = ward_id or context.get("wardId")
+            # Extract location from call context
+            if context.get("latitude"):
+                try:
+                    latitude = float(context.get("latitude"))
+                except (ValueError, TypeError):
+                    pass
+            if context.get("longitude"):
+                try:
+                    longitude = float(context.get("longitude"))
+                except (ValueError, TypeError):
+                    pass
 
     call_id = call_id or room_name
     ward_id = ward_id or extract_ward_id(ctx.room)
@@ -231,9 +248,11 @@ async def entrypoint(ctx: JobContext):
         ward_id=ward_id,
         call_id=call_id,
         call_direction=call_direction,
+        latitude=latitude,
+        longitude=longitude,
     )
 
-    # Create agent session
+    # Create agent session with MCP server connection
     session = AgentSession[SessionUserdata](
         userdata=userdata,
         stt=aws.STT(language="ko-KR"),
@@ -246,6 +265,7 @@ async def entrypoint(ctx: JobContext):
         turn_detection=MultilingualModel(),
         min_endpointing_delay=0.3,
         max_endpointing_delay=2.0,
+        mcp_servers=[mcp.MCPServerHTTP(url=KMA_MCP_URL)],
     )
 
     # Initialize handlers
@@ -299,6 +319,8 @@ async def entrypoint(ctx: JobContext):
     agent = ElderlyCompanionAgent(
         ward_context=ward_context,  # Empty string if RAG failed/timed out
         call_direction=call_direction,
+        latitude=latitude,
+        longitude=longitude,
     )
 
     # VAD timing: track when user starts/stops speaking
