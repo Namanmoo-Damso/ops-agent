@@ -32,6 +32,7 @@ from livekit.agents import (
 )
 from livekit.plugins import aws, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from llm_factory import create_llm
 from personality.elderly_companion import CallDirection, ElderlyCompanionAgent
 from rag_client import get_shared_rag_client
 from services.api_client import fetch_call_context, notify_call_end
@@ -256,10 +257,7 @@ async def entrypoint(ctx: JobContext):
     session = AgentSession[SessionUserdata](
         userdata=userdata,
         stt=aws.STT(language="ko-KR"),
-        llm=aws.LLM(
-            model="global.anthropic.claude-haiku-4-5-20251001-v1:0",
-            temperature=0.7,
-        ),
+        llm=create_llm(),  # Dynamic LLM loading from env vars
         tts=aws.TTS(voice="Seoyeon"),
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
