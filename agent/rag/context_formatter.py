@@ -9,7 +9,7 @@ ContextFormatter - RAG 검색 결과 포맷팅
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -90,6 +90,10 @@ class ContextFormatter:
         if not text:
             return ""
 
+        resolved_hints = []
+        if date_str:
+            resolved_hints = self._resolve_relative_dates(text, date_str, now)
+
         # 포맷 구성
         header_line = f"📅 {date_str}" if date_str else f"기억 #{index}"
         if keywords:
@@ -97,11 +101,14 @@ class ContextFormatter:
         if relative_time:
             header_line += f" - {relative_time}"
 
-        return f"""
-{header_line}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{text.strip()}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+        lines = [header_line]
+        if resolved_hints:
+            lines.append(f"날짜 해석: {', '.join(resolved_hints)}")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(text.strip())
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        return "\n" + "\n".join(lines)
 
     def _parse_chunk_header(self, header: str) -> tuple[str, str]:
         """
@@ -161,3 +168,90 @@ class ContextFormatter:
                 error,
             )
             return ""
+
+    def _resolve_relative_dates(
+        self,
+        text: str,
+        date_str: str,
+        now: datetime,
+    ) -> list[str]:
+        """상대 날짜 표현을 코드 레벨에서 해석해 힌트로 제공."""
+        if not text or not date_str:
+            return []
+
+        try:
+            base_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return []
+
+        now_local = now.astimezone(self.tz) if now.tzinfo else now.replace(tzinfo=self.tz)
+        now_date = now_local.date()
+
+        hints: list[str] = []
+        seen: set[str] = set()
+
+        relative_map = {
+            "오늘": 0,
+            "내일": 1,
+            "모레": 2,
+            "글피": 3,
+            "어제": -1,
+            "그저께": -2,
+            "그제": -2,
+            "엊그제": -2,
+        }
+
+        word_pattern = re.compile(r"(오늘|내일|모레|글피|어제|그저께|그제|엊그제)")
+        for match in word_pattern.finditer(text):
+            word = match.group(1)
+            if word in seen:
+                continue
+            seen.add(word)
+            target_date = base_date + timedelta(days=relative_map[word])
+            relative_label = self._format_relative_label(target_date, now_date)
+            hints.append(f"{word}={target_date.isoformat()}({relative_label})")
+
+        week_pattern = re.compile(r"(지난|이번|다음)\s*주\s*(월|화|수|목|금|토|일)요일")
+        day_map = {"월": 0, "화": 1, "수": 2, "목": 3, "금": 4, "토": 5, "일": 6}
+        week_start = base_date - timedelta(days=base_date.weekday())
+
+        for match in week_pattern.finditer(text):
+            phrase = match.group(0)
+            if phrase in seen:
+                continue
+            seen.add(phrase)
+            prefix = match.group(1)
+            day_name = match.group(2)
+            day_index = day_map[day_name]
+
+            if prefix == "지난":
+                target_date = week_start - timedelta(days=7) + timedelta(days=day_index)
+            elif prefix == "다음":
+                target_date = week_start + timedelta(days=7) + timedelta(days=day_index)
+            else:
+                target_date = week_start + timedelta(days=day_index)
+
+            relative_label = self._format_relative_label(target_date, now_date)
+            hints.append(f"{phrase}={target_date.isoformat()}({relative_label})")
+
+        return hints
+
+    @staticmethod
+    def _format_relative_label(target_date, now_date) -> str:
+        """해석된 날짜를 현재 기준 상대 표현으로 변환."""
+        diff_days = (target_date - now_date).days
+        if diff_days == 0:
+            return "오늘"
+        if diff_days == 1:
+            return "내일"
+        if diff_days == 2:
+            return "모레"
+        if diff_days == 3:
+            return "글피"
+        if diff_days == -1:
+            return "어제"
+        if diff_days == -2:
+            return "그저께"
+        if diff_days < 0:
+            return f"{abs(diff_days)}일 전"
+        return f"{diff_days}일 후"

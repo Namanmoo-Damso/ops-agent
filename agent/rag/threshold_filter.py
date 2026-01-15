@@ -46,13 +46,81 @@ class SearchThresholdFilter:
             return []
 
         filtered = []
-        for result in results:
+        metadata_not_dict = 0
+        missing_keyword_match = 0
+        missing_recommendation = 0
+        invalid_keyword_match = 0
+        invalid_recommendation = 0
+        sample_indices: list[int] = []
+
+        def record_issue(index: int) -> None:
+            if len(sample_indices) < 5:
+                sample_indices.append(index)
+
+        def normalize_flag(
+            metadata_obj: dict[str, Any],
+            key: str,
+            index: int,
+        ) -> tuple[bool, bool]:
+            nonlocal missing_keyword_match, missing_recommendation
+            nonlocal invalid_keyword_match, invalid_recommendation
+
+            if key not in metadata_obj:
+                if key == "hasKeywordMatch":
+                    missing_keyword_match += 1
+                else:
+                    missing_recommendation += 1
+                record_issue(index)
+                return False, True
+
+            value = metadata_obj.get(key)
+            if isinstance(value, bool):
+                return value, False
+
+            if isinstance(value, int) and value in (0, 1):
+                if key == "hasKeywordMatch":
+                    invalid_keyword_match += 1
+                else:
+                    invalid_recommendation += 1
+                record_issue(index)
+                return bool(value), True
+
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in ("true", "false"):
+                    if key == "hasKeywordMatch":
+                        invalid_keyword_match += 1
+                    else:
+                        invalid_recommendation += 1
+                    record_issue(index)
+                    return normalized == "true", True
+
+            if key == "hasKeywordMatch":
+                invalid_keyword_match += 1
+            else:
+                invalid_recommendation += 1
+            record_issue(index)
+            return False, True
+
+        for index, result in enumerate(results, 1):
             similarity = result.get("similarity", 0)
             metadata = result.get("metadata", {})
+            metadata_issue = False
+
+            if not isinstance(metadata, dict):
+                metadata_not_dict += 1
+                record_issue(index)
+                metadata = {}
+                metadata_issue = True
             
             # 키워드 매칭 플래그 확인 (API에서 RRF fusion 시 설정)
-            has_keyword_match = metadata.get("hasKeywordMatch", False)
-            is_recommendation = metadata.get("isRecommendation", False)
+            has_keyword_match, keyword_issue = normalize_flag(
+                metadata, "hasKeywordMatch", index
+            )
+            is_recommendation, recommendation_issue = normalize_flag(
+                metadata, "isRecommendation", index
+            )
+            metadata_issue = metadata_issue or keyword_issue or recommendation_issue
             
             # 1. FTS 키워드 매칭 결과: 점수와 상관없이 Safe-pass
             if has_keyword_match:
@@ -70,8 +138,33 @@ class SearchThresholdFilter:
             elif similarity >= self.min_vector_score:
                 filtered.append(result)
                 logger.debug(f"Pass (vector): score={similarity:.3f}")
+            elif metadata_issue and similarity > 0:
+                filtered.append(result)
+                logger.debug(
+                    f"Safe-pass (metadata issue): score={similarity:.4f}"
+                )
             else:
                 logger.debug(f"Filtered out: score={similarity:.4f}")
+
+        if (
+            metadata_not_dict
+            or missing_keyword_match
+            or missing_recommendation
+            or invalid_keyword_match
+            or invalid_recommendation
+        ):
+            logger.warning(
+                "RAG metadata validation issues: metadata_not_dict=%d, "
+                "missing_hasKeywordMatch=%d, missing_isRecommendation=%d, "
+                "invalid_hasKeywordMatch=%d, invalid_isRecommendation=%d, "
+                "sample_results=%s",
+                metadata_not_dict,
+                missing_keyword_match,
+                missing_recommendation,
+                invalid_keyword_match,
+                invalid_recommendation,
+                sample_indices,
+            )
 
         logger.info(
             f"[Filter] {len(results)} -> {len(filtered)} results "
