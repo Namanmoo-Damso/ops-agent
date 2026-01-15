@@ -9,6 +9,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+METADATA_KEYWORD_MATCH = "hasKeywordMatch"
+METADATA_RECOMMENDATION = "isRecommendation"
+
 
 class SearchThresholdFilter:
     """검색 결과 필터링 - FTS Safe-pass 지원."""
@@ -66,7 +69,7 @@ class SearchThresholdFilter:
             nonlocal invalid_keyword_match, invalid_recommendation
 
             if key not in metadata_obj:
-                if key == "hasKeywordMatch":
+                if key == METADATA_KEYWORD_MATCH:
                     missing_keyword_match += 1
                 else:
                     missing_recommendation += 1
@@ -78,7 +81,7 @@ class SearchThresholdFilter:
                 return value, False
 
             if isinstance(value, int) and value in (0, 1):
-                if key == "hasKeywordMatch":
+                if key == METADATA_KEYWORD_MATCH:
                     invalid_keyword_match += 1
                 else:
                     invalid_recommendation += 1
@@ -88,14 +91,14 @@ class SearchThresholdFilter:
             if isinstance(value, str):
                 normalized = value.strip().lower()
                 if normalized in ("true", "false"):
-                    if key == "hasKeywordMatch":
+                    if key == METADATA_KEYWORD_MATCH:
                         invalid_keyword_match += 1
                     else:
                         invalid_recommendation += 1
                     record_issue(index)
                     return normalized == "true", True
 
-            if key == "hasKeywordMatch":
+            if key == METADATA_KEYWORD_MATCH:
                 invalid_keyword_match += 1
             else:
                 invalid_recommendation += 1
@@ -115,21 +118,21 @@ class SearchThresholdFilter:
             
             # 키워드 매칭 플래그 확인 (API에서 RRF fusion 시 설정)
             has_keyword_match, keyword_issue = normalize_flag(
-                metadata, "hasKeywordMatch", index
+                metadata, METADATA_KEYWORD_MATCH, index
             )
             is_recommendation, recommendation_issue = normalize_flag(
-                metadata, "isRecommendation", index
+                metadata, METADATA_RECOMMENDATION, index
             )
             metadata_issue = metadata_issue or keyword_issue or recommendation_issue
             
             # 1. FTS 키워드 매칭 결과: 점수와 상관없이 Safe-pass
             if has_keyword_match:
                 filtered.append(result)
-                logger.debug(f"Safe-pass (keyword match): score={similarity:.4f}")
+                logger.debug(f"Safe-pass (keyword match): score={similarity:.3f}")
             # 2. FTS 추천 결과: Safe-pass
             elif is_recommendation:
                 filtered.append(result)
-                logger.debug(f"Safe-pass (recommendation): score={similarity:.4f}")
+                logger.debug(f"Safe-pass (recommendation): score={similarity:.3f}")
             # 3. 높은 점수: Safe-pass
             elif similarity >= self.fts_safe_pass_score:
                 filtered.append(result)
@@ -141,10 +144,10 @@ class SearchThresholdFilter:
             elif metadata_issue and similarity > 0:
                 filtered.append(result)
                 logger.debug(
-                    f"Safe-pass (metadata issue): score={similarity:.4f}"
+                    f"Safe-pass (metadata issue): score={similarity:.3f}"
                 )
             else:
-                logger.debug(f"Filtered out: score={similarity:.4f}")
+                logger.debug(f"Filtered out: score={similarity:.3f}")
 
         if (
             metadata_not_dict
