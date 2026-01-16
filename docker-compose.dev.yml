@@ -1,4 +1,32 @@
 services:
+  stt:
+    build: ./stt
+    container_name: whisper-stt
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # 런타임 튜닝 (Dockerfile 기본값 오버라이드)
+      - WHISPER_LANGUAGE=ko # 한국어 최적화
+      - WHISPER_BEAM_SIZE=5 # 빔 탐색 크기 (3=빠름, 5=균형, 10=정확)
+      - WHISPER_VAD_FILTER=true # 음성 구간 감지 활성화
+      - WHISPER_VAD_THRESHOLD=0.5 # VAD 민감도 (낮을수록 작은 목소리 감지)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      # 서버가 실제로 요청을 받을 준비가 되었는지 확인
+      test: ['CMD-SHELL', 'curl -f http://localhost:8000/health || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   ollama:
     build: ./llm
     network_mode: host
@@ -37,6 +65,8 @@ services:
       retries: 3
       start_period: 10s
     depends_on:
+      stt:
+        condition: service_healthy
       ollama:
         condition: service_healthy
 

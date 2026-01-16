@@ -10,6 +10,8 @@ import os
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from config import ConfigError, get_optional_config, validate_env_vars
 from constants import TIMEOUT_RAG_CONTEXT_WARMUP
 from handlers.care_alert import CareAlertHandler
@@ -39,6 +41,8 @@ from services.api_client import fetch_call_context, notify_call_end
 from services.redis_pubsub import get_redis_client, publish_call_end
 from userdata import SessionUserdata
 
+from stt.faster_whisper_client import FasterWhisperSTT
+
 # Agent name for routing
 AGENT_NAME = os.getenv("AGENT_NAME", "voice-agent")
 
@@ -47,6 +51,10 @@ KMA_MCP_URL = os.getenv("KMA_MCP_URL")
 
 # MCP (Tool calling) toggle - disable for models that don't support tools
 MCP_ENABLED = os.getenv("MCP_ENABLED", "true").lower() == "true"
+
+# STT provider selection
+STT_PROVIDER = os.getenv("STT_PROVIDER")  # "aws" | "custom"
+STT_SERVER_URL = os.getenv("STT_SERVER_URL")
 
 # Skip validation for download-files command (used during Docker build)
 _is_download_command = "download-files" in sys.argv
@@ -97,9 +105,9 @@ def prewarm(proc: JobProcess):
     try:
         logger.info("Prewarming: Loading VAD model...")
         proc.userdata["vad"] = silero.VAD.load(
-            min_speech_duration=0.3,
+            min_speech_duration=0.05,
             min_silence_duration=0.5,
-            activation_threshold=0.7,
+            activation_threshold=0.3,
         )
         logger.info("Prewarm complete")
     except Exception as e:
@@ -256,23 +264,39 @@ async def entrypoint(ctx: JobContext):
         longitude=longitude,
     )
 
+    # STT provider selection
+    if STT_PROVIDER == "custom" and STT_SERVER_URL:
+        stt_instance = FasterWhisperSTT(
+            server_url=STT_SERVER_URL,
+            language="ko",
+            beam_size=5,
+            vad_filter=False,
+            initial_prompt=userdata.get_full_transcript(),
+        )
+        logger.info(f"Using custom STT: {STT_SERVER_URL}")
+    else:
+        stt_instance = aws.STT(language="ko-KR")
+        logger.info("Using AWS Transcribe STT")
+
     # Create agent session (MCP only if enabled and URL configured)
     mcp_servers = []
     if MCP_ENABLED and KMA_MCP_URL:
         mcp_servers.append(mcp.MCPServerHTTP(url=KMA_MCP_URL))
         logger.info(f"MCP enabled: {KMA_MCP_URL}")
     else:
-        logger.info(f"MCP disabled (MCP_ENABLED={MCP_ENABLED}, KMA_MCP_URL={KMA_MCP_URL})")
+        logger.info(
+            f"MCP disabled (MCP_ENABLED={MCP_ENABLED}, KMA_MCP_URL={KMA_MCP_URL})"
+        )
 
     session = AgentSession[SessionUserdata](
         userdata=userdata,
-        stt=aws.STT(language="ko-KR"),
+        stt=stt_instance,
         llm=create_llm(),  # Dynamic LLM loading from env vars
         tts=aws.TTS(voice="Seoyeon"),
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
         min_endpointing_delay=0.3,
-        max_endpointing_delay=2.0,
+        max_endpointing_delay=1.5,
         mcp_servers=mcp_servers,
     )
 
