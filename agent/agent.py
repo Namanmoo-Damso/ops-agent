@@ -33,6 +33,7 @@ from livekit.agents import (
 from livekit.plugins import aws, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from personality.elderly_companion import CallDirection, ElderlyCompanionAgent
+from tts import CustomTTS
 from rag_client import get_shared_rag_client
 from services.api_client import fetch_call_context, notify_call_end
 from services.redis_pubsub import get_redis_client, publish_call_end
@@ -43,6 +44,10 @@ AGENT_NAME = os.getenv("AGENT_NAME", "voice-agent")
 
 # KMA MCP Server URL (localhost since using host network mode)
 KMA_MCP_URL = os.getenv("KMA_MCP_URL")
+
+# Custom TTS Server configuration
+CUSTOM_TTS_URL = os.getenv("CUSTOM_TTS_URL", "")
+CUSTOM_TTS_USE_WEBSOCKET = os.getenv("CUSTOM_TTS_USE_WEBSOCKET", "true").lower() == "true"
 
 # Skip validation for download-files command (used during Docker build)
 _is_download_command = "download-files" in sys.argv
@@ -252,6 +257,21 @@ async def entrypoint(ctx: JobContext):
         longitude=longitude,
     )
 
+    # Configure TTS: Custom TTS (no fallback)
+    # Note: WebSocket streaming disabled - use HTTP streaming instead
+    if CUSTOM_TTS_URL:
+        logger.info(f"Using Custom TTS: {CUSTOM_TTS_URL}")
+        tts = CustomTTS(
+            base_url=CUSTOM_TTS_URL,
+            use_websocket=False,  # Use HTTP, WebSocket API changed in 1.3.10
+            sample_rate=44100,
+            voice="F2",  # Female voice 1 (options: F1-F5, M1-M5)
+            speed=1.0,  # Slightly faster speech
+        )
+    else:
+        logger.info("Using AWS Polly TTS (no custom TTS configured)")
+        tts = aws.TTS(voice="Seoyeon")
+
     # Create agent session with MCP server connection
     session = AgentSession[SessionUserdata](
         userdata=userdata,
@@ -260,7 +280,7 @@ async def entrypoint(ctx: JobContext):
             model="global.anthropic.claude-haiku-4-5-20251001-v1:0",
             temperature=0.7,
         ),
-        tts=aws.TTS(voice="Seoyeon"),
+        tts=tts,
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
         min_endpointing_delay=0.3,
