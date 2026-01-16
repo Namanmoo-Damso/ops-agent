@@ -32,6 +32,7 @@ from livekit.agents import (
 )
 from livekit.plugins import aws, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from llm_factory import create_llm
 from personality.elderly_companion import CallDirection, ElderlyCompanionAgent
 from rag_client import get_shared_rag_client
 from services.api_client import fetch_call_context, notify_call_end
@@ -43,6 +44,9 @@ AGENT_NAME = os.getenv("AGENT_NAME", "voice-agent")
 
 # KMA MCP Server URL (localhost since using host network mode)
 KMA_MCP_URL = os.getenv("KMA_MCP_URL")
+
+# MCP (Tool calling) toggle - disable for models that don't support tools
+MCP_ENABLED = os.getenv("MCP_ENABLED", "true").lower() == "true"
 
 # Skip validation for download-files command (used during Docker build)
 _is_download_command = "download-files" in sys.argv
@@ -252,20 +256,24 @@ async def entrypoint(ctx: JobContext):
         longitude=longitude,
     )
 
-    # Create agent session with MCP server connection
+    # Create agent session (MCP only if enabled and URL configured)
+    mcp_servers = []
+    if MCP_ENABLED and KMA_MCP_URL:
+        mcp_servers.append(mcp.MCPServerHTTP(url=KMA_MCP_URL))
+        logger.info(f"MCP enabled: {KMA_MCP_URL}")
+    else:
+        logger.info(f"MCP disabled (MCP_ENABLED={MCP_ENABLED}, KMA_MCP_URL={KMA_MCP_URL})")
+
     session = AgentSession[SessionUserdata](
         userdata=userdata,
         stt=aws.STT(language="ko-KR"),
-        llm=aws.LLM(
-            model="global.anthropic.claude-haiku-4-5-20251001-v1:0",
-            temperature=0.7,
-        ),
+        llm=create_llm(),  # Dynamic LLM loading from env vars
         tts=aws.TTS(voice="Seoyeon"),
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
         min_endpointing_delay=0.3,
         max_endpointing_delay=2.0,
-        mcp_servers=[mcp.MCPServerHTTP(url=KMA_MCP_URL)],
+        mcp_servers=mcp_servers,
     )
 
     # Initialize handlers
