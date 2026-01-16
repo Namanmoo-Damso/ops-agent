@@ -33,6 +33,7 @@ from livekit.agents import (
 from livekit.plugins import aws, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from personality.elderly_companion import CallDirection, ElderlyCompanionAgent
+from tts.supertonic_tts import SupertonicTTS
 from rag_client import get_shared_rag_client
 from services.api_client import fetch_call_context, notify_call_end
 from services.redis_pubsub import get_redis_client, publish_call_end
@@ -65,6 +66,11 @@ logging.basicConfig(
     level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Enable DEBUG for livekit-agents and MCP
+logging.getLogger("livekit.agents").setLevel(log_level)
+logging.getLogger("livekit.agents.mcp").setLevel(logging.DEBUG)
+logging.getLogger("mcp").setLevel(logging.DEBUG)
 
 # Create AgentServer instance
 server = AgentServer()
@@ -260,7 +266,7 @@ async def entrypoint(ctx: JobContext):
             model="global.anthropic.claude-haiku-4-5-20251001-v1:0",
             temperature=0.7,
         ),
-        tts=aws.TTS(voice="Seoyeon"),
+        tts=SupertonicTTS(voice="F2", total_steps=20),
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
         min_endpointing_delay=0.3,

@@ -13,3 +13,9 @@ httpx==0.28.1
 
 # Redis client for caching
 redis==5.3.1
+
+# Custom TTS (Supertonic-2 ONNX - multilingual)
+# 모델은 Docker 빌드 시 Hugging Face에서 다운로드됨
+onnxruntime>=1.16.0
+soundfile>=0.12.0
+huggingface-hub>=0.20.0
