@@ -1,11 +1,8 @@
 """Session userdata for voice agent."""
+
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from personality.elderly_companion import CallDirection
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +13,7 @@ MAX_TRANSCRIPTS = 500
 @dataclass
 class TranscriptEntry:
     """Single transcript entry."""
+
     speaker_type: str  # 'user' or 'agent'
     text: str
     timestamp: datetime = field(default_factory=datetime.now)
@@ -29,6 +27,7 @@ class SessionUserdata:
 
     Stored in AgentSession and accessible via RunContext.
     """
+
     ward_id: str
     call_id: str
     call_direction: str = "inbound"  # "inbound" or "outbound"
@@ -39,11 +38,13 @@ class SessionUserdata:
 
     def add_transcript(self, speaker_type: str, text: str, is_final: bool = True):
         """Add a transcript entry with memory limit."""
-        self.transcripts.append(TranscriptEntry(
-            speaker_type=speaker_type,
-            text=text,
-            is_final=is_final,
-        ))
+        self.transcripts.append(
+            TranscriptEntry(
+                speaker_type=speaker_type,
+                text=text,
+                is_final=is_final,
+            )
+        )
 
         # Prevent memory leak by limiting transcript count
         if len(self.transcripts) > MAX_TRANSCRIPTS:
@@ -52,13 +53,15 @@ class SessionUserdata:
 
     def get_user_transcripts(self) -> list[str]:
         """Get all user transcripts as text."""
-        return [t.text for t in self.transcripts if t.speaker_type == 'user' and t.is_final]
+        return [
+            t.text for t in self.transcripts if t.speaker_type == "user" and t.is_final
+        ]
 
     def get_full_transcript(self) -> str:
         """Get full conversation as formatted text."""
         lines = []
         for t in self.transcripts:
             if t.is_final:
-                speaker = "어르신" if t.speaker_type == 'user' else "AI"
+                speaker = "어르신" if t.speaker_type == "user" else "AI"
                 lines.append(f"{speaker}: {t.text}")
         return "\n".join(lines)
