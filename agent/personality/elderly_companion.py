@@ -2,10 +2,10 @@
 ElderlyCompanionAgent - 어르신 돌봄 AI 에이전트
 
 메인 엔트리포인트: 모듈들을 조합하여 Agent 클래스 정의
+- AutoRAGMixin: 자동 과거 대화 검색
 - AgentMetricsMixin: 파이프라인 타이밍
 - GreetingManagerMixin: 인사말 관리
 - PersonaManagerMixin: 페르소나/프롬프트
-- MemoryToolMixin: search_memory 도구
 """
 
 import logging
@@ -14,7 +14,7 @@ from typing import Union
 from livekit.agents import Agent
 
 from ..prompts.greeting import CallDirection, GreetingManagerMixin
-from ..tools.memory import MemoryToolMixin
+from ..tools.auto_rag import AutoRAGMixin
 from .agent_metrics import AgentMetricsMixin
 from .persona_manager import PersonaManagerMixin
 
@@ -22,10 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 class ElderlyCompanionAgent(
+    AutoRAGMixin,
     AgentMetricsMixin,
     GreetingManagerMixin,
     PersonaManagerMixin,
-    MemoryToolMixin,
     Agent,
 ):
     """
@@ -35,10 +35,10 @@ class ElderlyCompanionAgent(
     자연스럽게 대화합니다.
 
     구성 요소:
+    - AutoRAGMixin: 자동 과거 대화 검색 및 컨텍스트 주입
     - AgentMetricsMixin: STT/LLM/TTS 타이밍 측정
     - GreetingManagerMixin: Redis Pub/Sub 인사말 관리
     - PersonaManagerMixin: 시스템 프롬프트 생성
-    - MemoryToolMixin: RAG 기반 기억 검색 도구
     """
 
     def __init__(

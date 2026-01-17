@@ -1,5 +1,5 @@
-"""Tools module - Agent function tools."""
+"""Tools module - Agent tools."""
 
-from .memory import MemoryToolMixin
+from .auto_rag import AutoRAGMixin
 
-__all__ = ["MemoryToolMixin"]
+__all__ = ["AutoRAGMixin"]

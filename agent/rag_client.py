@@ -4,10 +4,12 @@ RAG Client for Python Agent
 Provides utilities to search conversation history and get relevant context
 from PGVector storage (Bedrock Titan Embeddings V2 - 1024 dimensions)
 """
+
 import logging
 import os
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
 import httpx
 
 from .constants import (
@@ -194,7 +196,9 @@ class RagClient:
                 return data.get("results", [])
         except httpx.TimeoutException:
             # Timeout is common with vector search - log and return empty
-            logger.warning(f"RAG search timed out after {self.timeout}s for ward={ward_id}")
+            logger.warning(
+                f"RAG search timed out after {self.timeout}s for ward={ward_id}"
+            )
             return []
         except httpx.HTTPStatusError as e:
             # HTTP error (4xx, 5xx) - log status code
@@ -247,7 +251,9 @@ class RagClient:
                 return data.get("context", [])
         except httpx.TimeoutException:
             # Timeout - return empty to avoid blocking caller
-            logger.warning(f"Get context timed out after {self.timeout}s for ward={ward_id}")
+            logger.warning(
+                f"Get context timed out after {self.timeout}s for ward={ward_id}"
+            )
             return []
         except httpx.HTTPStatusError as e:
             # HTTP error - log status code
@@ -289,10 +295,14 @@ class RagClient:
                     timeout=self.timeout,
                 )
                 response.raise_for_status()
-                logger.info(f"✅ Weekly context preload started for ward={ward_id}, direction={call_direction}")
+                logger.info(
+                    f"✅ Weekly context preload started for ward={ward_id}, direction={call_direction}"
+                )
                 return True
         except httpx.TimeoutException:
-            logger.warning(f"⚠️  Preload timed out after {self.timeout}s for ward={ward_id}")
+            logger.warning(
+                f"⚠️  Preload timed out after {self.timeout}s for ward={ward_id}"
+            )
             return False
         except httpx.HTTPStatusError as e:
             logger.error(f"❌ Preload HTTP error {e.response.status_code}: {e}")
@@ -345,9 +355,7 @@ class RagClient:
                     relative_time = extract_result_time_label(result)
 
                     if text:  # Only add if text exists
-                        time_label = (
-                            f" · {relative_time}" if relative_time else ""
-                        )
+                        time_label = f" · {relative_time}" if relative_time else ""
                         context_parts.append(
                             f"\n[관련도 {similarity_pct}%{time_label}]\n{text}\n"
                         )
@@ -383,7 +391,9 @@ def get_shared_rag_client(timeout: Optional[float] = None) -> "RagClient":
     """
     global _shared_rag_client
     if _shared_rag_client is None:
-        _shared_rag_client = RagClient(timeout=timeout) if timeout is not None else RagClient()
+        _shared_rag_client = (
+            RagClient(timeout=timeout) if timeout is not None else RagClient()
+        )
     elif timeout is not None and _shared_rag_client.timeout != float(timeout):
         _shared_rag_client = RagClient(timeout=timeout)
     return _shared_rag_client
