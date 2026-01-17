@@ -327,6 +327,15 @@ class CareAlertHandler:
             "criteria": [],
         }
 
+        try:
+            self._populate_detection_criteria(alert, info)
+        except Exception as e:
+            logger.warning(f"[CareAlert] Failed to build detection criteria: {e}")
+
+        return info
+
+    def _populate_detection_criteria(self, alert: CareAlert, info: dict) -> None:
+        """Populate detection criteria based on alert type."""
         if alert.alert_type == AlertType.DEVICE_FALL:
             payload: DeviceFallPayload = alert.payload
             info["criteria"].append({
@@ -396,8 +405,6 @@ class CareAlertHandler:
                     "value": f"{payload.intensity * 100:.0f}%",
                     "level": "high" if payload.intensity > 0.7 else "medium",
                 })
-
-        return info
 
     async def _publish_alert(
         self,
