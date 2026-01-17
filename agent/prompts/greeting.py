@@ -8,25 +8,21 @@ GreetingManager - 인사말 관리 모듈
    - ward_id가 있으면 하이브리드(Pull/Push) 모드로 전환합니다.
 3. 하이브리드 Fetch:
    - (Pull) Redis 캐시에 개인화된 인사말이 있는지 확인합니다. 있다면 즉시 송출하고 종료합니다.
-   - (Push) 캐시가 없으면 정적 인사말을 먼저 송출하고, Redis Pub/Sub을 구독하여 실시간 생성을 기다립니다.
-4. 추가 콘텐츠 처리 (_on_greeting_received):
-   - Pub/Sub을 통해 뒤늦게 생성된 인사말이 도착하면, 이미 송출된 정적 인사말과 비교합니다.
-   - 정적 인사말 부분을 제외한 '새로 추가된 내용'만 추출하여 추가로 송출합니다.
+   - (Push) 캐시가 없으면 1.5초간 실시간 인사말 생성을 기다립니다.
+   - 1.5초 내에 생성되면 개인화 인사말을 전체 송출합니다.
+   - 1.5초가 넘어가면 정적 인사말을 송출하고, 이후 도착하는 개인화 인사말은 무시합니다.
 """
 
 import asyncio
 import logging
 import time
 from enum import Enum
-from typing import Callable, Optional, Protocol, Union
+from typing import Optional, Protocol, Union
 
 from ..constants import TIMEOUT_GREETING_FETCH
-from ..services.redis_pubsub import subscribe_to_greeting
+from ..services.redis_pubsub import get_redis_client, subscribe_to_greeting
 
 logger = logging.getLogger(__name__)
-
-MIN_ADDITIONAL_CONTENT_LENGTH = 6
-MIN_FULL_GREETING_EXTRA_CHARS = 10
 
 
 class SessionUserdataLike(Protocol):
@@ -86,7 +82,7 @@ class GreetingManagerMixin:
         )
 
     async def on_enter(self) -> None:
-        """Agent enters session - Push-based greeting approach."""
+        """Agent enters session - Pull-cached or Push-pubsub greeting approach."""
         logger.info("VoiceAgent entering with direction=%s", self.call_direction.value)
 
         session = getattr(self, "session", None)
@@ -99,119 +95,65 @@ class GreetingManagerMixin:
             if hasattr(session, "userdata")
             else None
         )
+
+        # 1. Ward ID가 없는 경우: 즉시 정적 인사말 송출 후 종료
         if not ward_id:
             logger.warning("Ward ID not available, using static greeting only")
             session.say(self._static_greeting, allow_interruptions=False)
             return
 
-        logger.info(f"[greeting] Checking for personalized greeting (ward={ward_id})")
-        greeting_received = asyncio.Event()
-        start_time = time.monotonic()
-
-        async def on_cached(personalized_greeting: str) -> None:
-            elapsed = time.monotonic() - start_time
-            logger.info(f"[greeting] From cache after {elapsed:.2f}s")
-            greeting_received.set()
-            session.say(personalized_greeting, allow_interruptions=False)
-
-        async def on_pubsub(personalized_greeting: str) -> None:
-            elapsed = time.monotonic() - start_time
-            logger.info(f"[greeting] From Pub/Sub after {elapsed:.2f}s")
-            greeting_received.set()
-            await self._on_greeting_received(personalized_greeting)
-
-        asyncio.create_task(
-            self._log_greeting_timeout(greeting_received, start_time, ward_id)
-        )
-        asyncio.create_task(self._fetch_greeting_hybrid(ward_id, on_cached, on_pubsub))
-
-    async def _fetch_greeting_hybrid(
-        self,
-        ward_id: str,
-        on_cached: Callable,
-        on_pubsub: Callable,
-    ) -> None:
-        """Fetch greeting using hybrid Pull/Push approach."""
-        from ..services.redis_pubsub import get_redis_client
-
-        session = getattr(self, "session", None)
-        if not session:
-            return
-
+        # 2. 캐시 확인: 캐시가 있으면 즉시 송출하고 종료
         try:
             if client := await get_redis_client():
                 cache_key = f"rag:greeting:ward:{ward_id}"
                 if cached_greeting := await client.get(cache_key):
-                    await on_cached(cached_greeting)
+                    logger.info(f"[greeting] Cache hit (ward={ward_id})")
+                    session.say(cached_greeting, allow_interruptions=False)
                     return
         except Exception as e:
-            logger.error(f"[greeting] Redis error: {e}")
+            logger.error(f"[greeting] Redis cache check failed: {e}")
 
-        logger.info("[greeting] No cached greeting, saying static greeting first")
-        session.say(self._static_greeting, allow_interruptions=False)
-        await subscribe_to_greeting(ward_id, on_pubsub, timeout=TIMEOUT_GREETING_FETCH)
+        # 3. 캐시가 없는 경우: 1초간 Pub/Sub 메시지를 기다려봄
+        logger.info(
+            "[greeting] Cache miss, waiting 1s for Pub/Sub before static fallback"
+        )
 
-    async def _on_greeting_received(self, personalized_greeting: str) -> None:
-        """Process personalized greeting from Pub/Sub."""
-        try:
-            session = getattr(self, "session", None)
-            if not session:
+        start_time = time.monotonic()
+        greeting_received = asyncio.Event()
+        is_static_spoken = False
+
+        async def on_pubsub(personalized_greeting: str) -> None:
+            nonlocal is_static_spoken
+            greeting_received.set()
+
+            if is_static_spoken:
+                logger.info(
+                    "[greeting] Pub/Sub arrived too late, ignoring as static greeting already spoken"
+                )
                 return
 
-            static_greeting = self._static_greeting
-            if self._normalize_greeting(
-                personalized_greeting
-            ) == self._normalize_greeting(static_greeting):
-                logger.info("[greeting] Received same as static, skipping")
-                return
-
-            additional = self._extract_additional_content(
-                personalized_greeting, static_greeting
+            # 1초 이내에 도착한 경우 -> 전체 개인화 인사말 송출
+            logger.info(
+                f"[greeting] Pub/Sub fast arrival ({time.monotonic() - start_time:.2f}s)"
             )
-            if additional:
-                additional = additional.strip().lstrip(".").strip()
-                logger.info(f"[greeting] Adding: {additional[:50]}...")
-                session.say(additional, allow_interruptions=True)
-        except Exception as e:
-            logger.error(f"[greeting] Error: {e}", exc_info=True)
+            session.say(personalized_greeting, allow_interruptions=False)
 
-    def _extract_additional_content(
-        self, full_greeting: str, static_part: str
-    ) -> Optional[str]:
-        """Extract additional personalized content from full greeting."""
-        full_norm = self._normalize_greeting(full_greeting)
-        static_norm = self._normalize_greeting(static_part)
+        # 구독 시작
+        asyncio.create_task(
+            subscribe_to_greeting(ward_id, on_pubsub, timeout=TIMEOUT_GREETING_FETCH)
+        )
+        asyncio.create_task(
+            self._log_greeting_timeout(greeting_received, start_time, ward_id)
+        )
 
-        if full_norm == static_norm:
-            return None
-
-        # 1. Prefix match
-        if full_norm.startswith(static_norm):
-            additional = full_norm[len(static_norm) :].strip()
-            if len(additional) >= MIN_ADDITIONAL_CONTENT_LENGTH:
-                return additional
-
-        # 2. Sentence split match
-        for delimiter in [". ", "。 ", "! ", "? ", "！ ", "？ "]:
-            if delimiter in full_norm:
-                parts = full_norm.split(delimiter, 1)
-                if self._normalize_greeting(parts[0]) == static_norm:
-                    rest = parts[1].strip()
-                    if len(rest) >= MIN_ADDITIONAL_CONTENT_LENGTH:
-                        return rest
-
-        # 3. Fallback: length based
-        if len(full_norm) > len(static_norm) + MIN_FULL_GREETING_EXTRA_CHARS:
-            return full_norm
-
-        return None
-
-    def _normalize_greeting(self, text: str) -> str:
-        """Normalize greeting strings for comparison."""
-        normalized = text.strip().lower()
-        while normalized.endswith((".", "!", "?", "，", "？", "！", "…")):
-            normalized = normalized[:-1].strip()
-        return " ".join(normalized.split())
+        try:
+            # 1.5초 동안 Pub/Sub 메시지 대기
+            await asyncio.wait_for(greeting_received.wait(), timeout=1.5)
+        except asyncio.TimeoutError:
+            # 1.5초 내에 안 오면 정적 인사말 송출
+            is_static_spoken = True
+            logger.info("[greeting] 1.5s wait timeout, saying static greeting first")
+            session.say(self._static_greeting, allow_interruptions=False)
 
     async def _log_greeting_timeout(
         self, greeting_received: asyncio.Event, start_time: float, ward_id: str
