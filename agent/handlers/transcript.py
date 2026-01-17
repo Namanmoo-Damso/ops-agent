@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Set, Callable
 
-from services.redis_pubsub import publish_transcript, store_transcript_direct
+from ..services.redis_pubsub import publish_transcript, store_transcript_direct
 
 logger = logging.getLogger(__name__)
 

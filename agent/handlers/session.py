@@ -6,8 +6,8 @@ from typing import Optional
 
 from livekit.agents import JobContext
 
-from services.redis_pubsub import publish_call_end
-from services.api_client import notify_call_end
+from ..services.redis_pubsub import publish_call_end
+from ..services.api_client import notify_call_end
 
 logger = logging.getLogger(__name__)
 

@@ -10,19 +10,6 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from config import ConfigError, get_optional_config, validate_env_vars
-from constants import TIMEOUT_RAG_CONTEXT_WARMUP
-from handlers.care_alert import CareAlertHandler
-from handlers.session import (
-    SessionEndHandler,
-    extract_ward_id,
-    get_session_metadata,
-    wait_for_participant,
-)
-from handlers.takeover import TakeoverHandler
-from handlers.transcript import TranscriptHandler
 from livekit.agents import (
     AgentServer,
     AgentSession,
@@ -34,14 +21,26 @@ from livekit.agents import (
 )
 from livekit.plugins import aws, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
-from llm_factory import create_llm
-from personality.elderly_companion import CallDirection, ElderlyCompanionAgent
-from rag_client import get_shared_rag_client
-from services.api_client import fetch_call_context, notify_call_end
-from services.redis_pubsub import get_redis_client, publish_call_end
-from userdata import SessionUserdata
 
 from stt.faster_whisper_client import FasterWhisperSTT
+
+from .config import ConfigError, get_optional_config, validate_env_vars
+from .constants import TIMEOUT_RAG_CONTEXT_WARMUP
+from .handlers.care_alert import CareAlertHandler
+from .handlers.session import (
+    SessionEndHandler,
+    extract_ward_id,
+    get_session_metadata,
+    wait_for_participant,
+)
+from .handlers.takeover import TakeoverHandler
+from .handlers.transcript import TranscriptHandler
+from .llm_factory import create_llm
+from .rag_client import get_shared_rag_client
+from .services.api_client import fetch_call_context, notify_call_end
+from .services.redis_pubsub import get_redis_client, publish_call_end
+from .userdata import SessionUserdata
+from .voice_agent import CallDirection, VoiceAgent
 
 # Agent name for routing
 AGENT_NAME = os.getenv("AGENT_NAME", "voice-agent")
@@ -49,7 +48,8 @@ AGENT_NAME = os.getenv("AGENT_NAME", "voice-agent")
 # KMA MCP Server URL (localhost since using host network mode)
 KMA_MCP_URL = os.getenv("KMA_MCP_URL")
 
-# MCP (Tool calling) toggle - disable for models that don't support tools
+# MCP toggle - enable/disable weather tools from KMA MCP server
+# Note: search_memory tool is always enabled regardless of this setting
 MCP_ENABLED = os.getenv("MCP_ENABLED", "true").lower() == "true"
 
 # STT provider selection
@@ -348,7 +348,7 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"Target participant: {target_identity}")
 
     # Create and start agent with conversation context
-    agent = ElderlyCompanionAgent(
+    agent = VoiceAgent(
         ward_context=ward_context,  # Empty string if RAG failed/timed out
         call_direction=call_direction,
         latitude=latitude,

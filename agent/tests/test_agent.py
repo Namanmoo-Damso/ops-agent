@@ -11,21 +11,20 @@
 필요 패키지:
     pip install pytest pytest-asyncio
 """
-import asyncio
-import time
-import pytest
-from dataclasses import dataclass
-from typing import Optional
 
+import time
+from dataclasses import dataclass
+
+import pytest
 from livekit.agents import AgentSession
 from livekit.plugins import aws
-
-from personality.elderly_companion import ElderlyCompanionAgent, CallDirection
+from voice_agent import CallDirection, VoiceAgent
 
 
 @dataclass
 class TestCase:
     """테스트 케이스 정의"""
+
     question: str
     expected_intent: str
     category: str  # very_short, short, medium, long, very_long
@@ -63,7 +62,6 @@ TEST_CASES = [
         expected_intent="안부에 대답하고 어르신의 안부도 묻는다",
         category="very_short",
     ),
-    
     # 💬 Short Answers (1-2 sentences)
     TestCase(
         question="오늘 점심 뭐 먹을까?",
@@ -90,7 +88,6 @@ TEST_CASES = [
         expected_intent="오늘 요일을 알려준다",
         category="short",
     ),
-    
     # 📝 Medium Answers (3-5 sentences)
     TestCase(
         question="무릎이 아픈데 어떡하지?",
@@ -117,7 +114,6 @@ TEST_CASES = [
         expected_intent="병원 일정에 대해 물어보거나 확인을 도와주려 한다",
         category="medium",
     ),
-    
     # 📖 Long Answers (6-10 sentences)
     TestCase(
         question="요즘 외로운데 어떡하지?",
@@ -134,7 +130,6 @@ TEST_CASES = [
         expected_intent="하루 일과를 시간대별로 제안한다 (아침 산책, 점심, 휴식, 저녁 등)",
         category="long",
     ),
-    
     # 🎵 Very Long Answers (특수 케이스)
     TestCase(
         question="애국가 1절 불러줘",
@@ -155,6 +150,7 @@ TEST_CASES = [
 # 테스트 픽스처
 # ==============================================================================
 
+
 @pytest.fixture
 def llm():
     """LLM 인스턴스 (평가용)"""
@@ -168,61 +164,65 @@ def llm():
 # 개별 테스트 함수
 # ==============================================================================
 
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("test_case", TEST_CASES, ids=[tc.question[:20] for tc in TEST_CASES])
+@pytest.mark.parametrize(
+    "test_case", TEST_CASES, ids=[tc.question[:20] for tc in TEST_CASES]
+)
 async def test_agent_response(test_case: TestCase, llm):
     """에이전트 응답 테스트"""
-    
+
     async with (
         llm,
         AgentSession(llm=llm) as session,
     ):
         # 에이전트 시작
-        agent = ElderlyCompanionAgent(
+        agent = VoiceAgent(
             ward_context="",
             call_direction=CallDirection.INBOUND,
         )
         await session.start(agent)
-        
+
         # 타이밍 측정 시작
         start_time = time.time()
-        
+
         # 사용자 입력 실행
         result = await session.run(user_input=test_case.question)
-        
+
         # 타이밍 측정 종료
         elapsed_time = time.time() - start_time
-        
+
         # 결과 출력
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"📝 질문: {test_case.question}")
         print(f"📂 카테고리: {test_case.category}")
         print(f"⏱️  응답 시간: {elapsed_time:.3f}s")
-        
+
         # 응답 내용 확인
         response_event = result.expect.next_event()
         response_event.is_message(role="assistant")
-        
+
         # 응답 내용 출력
         event_item = response_event.event().item
-        if hasattr(event_item, 'content'):
+        if hasattr(event_item, "content"):
             content = event_item.content
             if isinstance(content, list):
-                content = ' '.join(str(c) for c in content)
+                content = " ".join(str(c) for c in content)
             print(f"💬 응답: {content}")
-        
+
         # LLM 판정
         print(f"🎯 기대 의도: {test_case.expected_intent}")
         await response_event.judge(
             llm,
             intent=test_case.expected_intent,
         )
-        print(f"✅ 판정: PASS")
-        
+        print("✅ 판정: PASS")
+
         # 응답 시간 체크
-        assert elapsed_time < test_case.max_response_time, \
+        assert elapsed_time < test_case.max_response_time, (
             f"응답 시간 {elapsed_time:.2f}s가 최대 {test_case.max_response_time}s를 초과했습니다"
-        
+        )
+
         # 더 이상 이벤트가 없는지 확인
         result.expect.no_more_events()
 
@@ -230,6 +230,7 @@ async def test_agent_response(test_case: TestCase, llm):
 # ==============================================================================
 # 카테고리별 테스트 (그룹 실행용)
 # ==============================================================================
+
 
 @pytest.mark.asyncio
 async def test_very_short_answers(llm):
@@ -245,7 +246,7 @@ async def test_short_answers(llm):
     await _run_category_tests(cases, llm)
 
 
-@pytest.mark.asyncio  
+@pytest.mark.asyncio
 async def test_medium_answers(llm):
     """Medium 카테고리 전체 테스트"""
     cases = [tc for tc in TEST_CASES if tc.category == "medium"]
@@ -269,47 +270,49 @@ async def test_very_long_answers(llm):
 async def _run_category_tests(cases: list[TestCase], llm):
     """카테고리 테스트 실행 헬퍼"""
     results = []
-    
+
     async with (
         llm,
         AgentSession(llm=llm) as session,
     ):
-        agent = ElderlyCompanionAgent(
+        agent = VoiceAgent(
             ward_context="",
             call_direction=CallDirection.INBOUND,
         )
         await session.start(agent)
-        
+
         for test_case in cases:
             start_time = time.time()
             result = await session.run(user_input=test_case.question)
             elapsed_time = time.time() - start_time
-            
+
             response_event = result.expect.next_event()
             response_event.is_message(role="assistant")
-            
+
             # 응답 내용 추출
             event_item = response_event.event().item
             content = ""
-            if hasattr(event_item, 'content'):
+            if hasattr(event_item, "content"):
                 content = event_item.content
                 if isinstance(content, list):
-                    content = ' '.join(str(c) for c in content)
-            
-            results.append({
-                "question": test_case.question,
-                "response": content,
-                "time": elapsed_time,
-            })
-            
+                    content = " ".join(str(c) for c in content)
+
+            results.append(
+                {
+                    "question": test_case.question,
+                    "response": content,
+                    "time": elapsed_time,
+                }
+            )
+
             print(f"\n질문: {test_case.question}")
             print(f"응답: {content[:100]}...")
             print(f"시간: {elapsed_time:.3f}s")
-    
+
     # 결과 요약
-    print(f"\n{'='*60}")
-    print(f"📊 카테고리 테스트 결과 요약")
-    print(f"{'='*60}")
+    print(f"\n{'=' * 60}")
+    print("📊 카테고리 테스트 결과 요약")
+    print(f"{'=' * 60}")
     total_time = sum(r["time"] for r in results)
     avg_time = total_time / len(results) if results else 0
     print(f"총 테스트: {len(results)}개")
@@ -321,98 +324,103 @@ async def _run_category_tests(cases: list[TestCase], llm):
 # 전체 테스트 + 타이밍 리포트
 # ==============================================================================
 
+
 @pytest.mark.asyncio
 async def test_all_with_timing_report(llm):
     """전체 테스트 + 타이밍 리포트 생성"""
-    
+
     results = []
-    
+
     async with (
         llm,
         AgentSession(llm=llm) as session,
     ):
-        agent = ElderlyCompanionAgent(
+        agent = VoiceAgent(
             ward_context="",
             call_direction=CallDirection.INBOUND,
         )
         await session.start(agent)
-        
+
         for test_case in TEST_CASES:
             start_time = time.time()
-            
+
             try:
                 result = await session.run(user_input=test_case.question)
                 elapsed_time = time.time() - start_time
-                
+
                 response_event = result.expect.next_event()
                 response_event.is_message(role="assistant")
-                
+
                 event_item = response_event.event().item
                 content = ""
-                if hasattr(event_item, 'content'):
+                if hasattr(event_item, "content"):
                     content = event_item.content
                     if isinstance(content, list):
-                        content = ' '.join(str(c) for c in content)
-                
-                results.append({
-                    "category": test_case.category,
-                    "question": test_case.question,
-                    "response": content,
-                    "time": elapsed_time,
-                    "success": True,
-                    "error": None,
-                })
-                
+                        content = " ".join(str(c) for c in content)
+
+                results.append(
+                    {
+                        "category": test_case.category,
+                        "question": test_case.question,
+                        "response": content,
+                        "time": elapsed_time,
+                        "success": True,
+                        "error": None,
+                    }
+                )
+
             except Exception as e:
                 elapsed_time = time.time() - start_time
-                results.append({
-                    "category": test_case.category,
-                    "question": test_case.question,
-                    "response": "",
-                    "time": elapsed_time,
-                    "success": False,
-                    "error": str(e),
-                })
-    
+                results.append(
+                    {
+                        "category": test_case.category,
+                        "question": test_case.question,
+                        "response": "",
+                        "time": elapsed_time,
+                        "success": False,
+                        "error": str(e),
+                    }
+                )
+
     # 리포트 출력
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("📊 PIPELINE TIMING REPORT (Text-based, LLM only)")
-    print("="*80)
-    
+    print("=" * 80)
+
     categories = ["very_short", "short", "medium", "long", "very_long"]
-    
+
     for cat in categories:
         cat_results = [r for r in results if r["category"] == cat]
         if not cat_results:
             continue
-            
+
         avg_time = sum(r["time"] for r in cat_results) / len(cat_results)
         success_count = sum(1 for r in cat_results if r["success"])
-        
+
         print(f"\n📂 {cat.upper()}")
         print("-" * 40)
-        
+
         for r in cat_results:
             status = "✅" if r["success"] else "❌"
             print(f"  {status} [{r['time']:.2f}s] {r['question'][:30]}")
             if r["response"]:
                 print(f"     → {r['response'][:60]}...")
-        
+
         print(f"\n  평균: {avg_time:.3f}s | 성공: {success_count}/{len(cat_results)}")
-    
+
     # 전체 요약
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("📈 SUMMARY")
-    print("="*80)
+    print("=" * 80)
     total_time = sum(r["time"] for r in results)
     avg_time = total_time / len(results)
     success_count = sum(1 for r in results if r["success"])
-    
+
     print(f"총 테스트: {len(results)}개")
     print(f"성공: {success_count}/{len(results)}")
     print(f"평균 LLM 응답 시간: {avg_time:.3f}s")
     print(f"총 소요 시간: {total_time:.3f}s")
-    
+
     # 카테고리별 평균
     print("\n카테고리별 평균 LLM 응답 시간:")
     for cat in categories:
