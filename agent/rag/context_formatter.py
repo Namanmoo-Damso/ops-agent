@@ -49,25 +49,17 @@ class ContextFormatter:
             return ""
 
         now = current_time or datetime.now(self.tz)
-        formatted_parts = ["=== 어르신의 과거 기억 (실제 대화 기록) ===\n"]
+        formatted_parts = []
 
         for i, result in enumerate(results, 1):
             formatted = self._format_single_result(result, now, i)
             if formatted:
                 formatted_parts.append(formatted)
 
-        if len(formatted_parts) == 1:
+        if not formatted_parts:
             return ""
 
-        formatted_parts.append(
-            "\n💡 위 대화 기록을 바탕으로 어르신의 질문에 답변하세요."
-        )
-
-        context = "\n".join(formatted_parts)
-        logger.info(
-            f"[Formatter] Formatted {len(results)} results ({len(context)} chars)"
-        )
-        return context
+        return "\n".join(formatted_parts)
 
     def _format_single_result(
         self,
@@ -96,20 +88,31 @@ class ContextFormatter:
             resolved_hints = self._resolve_relative_dates(text, date_str, now)
 
         # 포맷 구성
-        header_line = f"📅 {date_str}" if date_str else f"기억 #{index}"
-        if keywords:
-            header_line += f" ({keywords})"
+        meta_parts = []
+        if date_str:
+            meta_parts.append(f"Date: {date_str}")
+
         if relative_time:
-            header_line += f" - {relative_time}"
+            meta_parts.append(f"({relative_time})")
 
-        lines = [header_line]
+        if keywords:
+            meta_parts.append(f"Topic: {keywords}")
+
+        # 깔끔한 헤더 구성
+        if meta_parts:
+            header = f"### {' '.join(meta_parts)}"
+        else:
+            header = f"### Memory #{index}"
+
+        lines = [header]
+
         if resolved_hints:
-            lines.append(f"날짜 해석: {', '.join(resolved_hints)}")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append(text.strip())
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append(f"> Hints: {', '.join(resolved_hints)}")
 
-        return "\n" + "\n".join(lines)
+        lines.append(text.strip())
+        lines.append("")  # Separator
+
+        return "\n".join(lines)
 
     def _parse_chunk_header(self, header: str) -> tuple[str, str]:
         """

@@ -9,8 +9,9 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
-from ..constants import AGENT_TZINFO
 from jinja2 import Template
+
+from ..constants import AGENT_TZINFO
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +57,17 @@ Your name is '{{ persona.name }}' (Sodam).
 - 날씨 조회 시 이 좌표를 사용하세요
 
 {% endif -%}
-{{ memory_instructions }}
+{% if retrieved_memories -%}
+# {{ memory_context.title }}
+{% for rule in memory_context.instructions -%}
+- {{ rule }}
+{% endfor %}
 
+{{ retrieved_memories }}
+
+{% endif -%}
 {% if ward_context -%}
+
 # 어르신 정보 (참고용)
 {{ ward_context }}
 
@@ -114,7 +123,7 @@ Format: {{ tools.search_memory.format }}
         ward_context: str = "",
         latitude: float | None = None,
         longitude: float | None = None,
-        memory_instructions: str = "",
+        retrieved_memories: str = "",
     ) -> str:
         """
         Build full agent instructions.
@@ -123,6 +132,7 @@ Format: {{ tools.search_memory.format }}
             ward_context: Pre-fetched context about the ward
             latitude: Ward's location latitude
             longitude: Ward's location longitude
+            retrieved_memories: Formatted RAG memory segments
 
         Returns:
             Complete instruction string
@@ -151,11 +161,12 @@ Format: {{ tools.search_memory.format }}
             tools=self.config["tools"],
             interruptions=self.config["interruptions"],
             guardrails=self.config["guardrails"],
+            memory_context=self.config.get("memory_context", {}),
             topics=self.config["topics"],
             current_time=current_time,
             current_date=current_date,
             location_info=location_info,
-            memory_instructions=memory_instructions,
+            retrieved_memories=retrieved_memories,
             ward_context=ward_context,
         )
 

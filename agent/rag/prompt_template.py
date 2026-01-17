@@ -145,7 +145,7 @@ class AgentPromptTemplate:
 ## 올바른 응답 예시
 ```
 [검색 결과]
-📅 YYYY-MM-DD - 5일 전
+YYYY-MM-DD - 5일 전
 날짜 해석: 내일=YYYY-MM-DD(나흘 전)
 내용: "내일 아들이 온다"
 
