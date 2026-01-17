@@ -297,11 +297,15 @@ class CareAlertHandler:
         iOS app can display a banner/toast when receiving this message.
         """
         try:
+            # Build detection criteria info for UI display
+            detection_info = self._build_detection_info(alert)
+
             payload = json.dumps({
                 "alertType": alert.alert_type.value,
                 "severity": alert.severity.value,
                 "agentResponse": agent_response,
                 "timestamp": alert.timestamp,
+                "detectionInfo": detection_info,
             })
             await self.room.local_participant.publish_data(
                 payload.encode("utf-8"),
@@ -311,6 +315,96 @@ class CareAlertHandler:
             logger.info(f"[CareAlert] Notified iOS: {alert.alert_type.value} ({alert.severity.value})")
         except Exception as e:
             logger.error(f"[CareAlert] Failed to notify iOS: {e}")
+
+    def _build_detection_info(self, alert: CareAlert) -> dict:
+        """Build detection criteria information for display.
+
+        Returns info about what triggered the alert and confidence/severity details.
+        """
+        info = {
+            "type": alert.alert_type.value,
+            "severity": alert.severity.value,
+            "criteria": [],
+        }
+
+        try:
+            self._populate_detection_criteria(alert, info)
+        except Exception as e:
+            logger.warning(f"[CareAlert] Failed to build detection criteria: {e}")
+
+        return info
+
+    def _populate_detection_criteria(self, alert: CareAlert, info: dict) -> None:
+        """Populate detection criteria based on alert type."""
+        if alert.alert_type == AlertType.DEVICE_FALL:
+            payload: DeviceFallPayload = alert.payload
+            info["criteria"].append({
+                "name": "충격 강도",
+                "value": f"{payload.impact_magnitude:.1f}",
+                "level": "high" if payload.impact_magnitude > 3.0 else "medium" if payload.impact_magnitude > 2.0 else "low",
+            })
+            info["criteria"].append({
+                "name": "낙하 유형",
+                "value": payload.fall_type.value,
+                "level": "high" if payload.fall_type == DeviceFallType.FREEFALL_IMPACT else "medium",
+            })
+            if payload.freefall_duration:
+                info["criteria"].append({
+                    "name": "자유낙하 시간",
+                    "value": f"{payload.freefall_duration:.2f}초",
+                    "level": "high" if payload.freefall_duration > 0.3 else "medium",
+                })
+
+        elif alert.alert_type == AlertType.PERSON_FALL:
+            payload: PersonFallPayload = alert.payload
+            info["criteria"].append({
+                "name": "감지 유형",
+                "value": payload.detection_type.value,
+                "level": "high",
+            })
+            if payload.face_y_delta:
+                info["criteria"].append({
+                    "name": "얼굴 Y축 변화",
+                    "value": f"{payload.face_y_delta:.1f}",
+                    "level": "high" if abs(payload.face_y_delta) > 100 else "medium",
+                })
+
+        elif alert.alert_type == AlertType.LOUD_VOICE:
+            payload: LoudVoicePayload = alert.payload
+            info["criteria"].append({
+                "name": "음량 레벨",
+                "value": f"{payload.level:.1f}",
+                "level": "high" if payload.level > 0.8 else "medium" if payload.level > 0.6 else "low",
+            })
+            info["criteria"].append({
+                "name": "데시벨",
+                "value": f"{payload.decibel:.0f}dB",
+                "level": "high" if payload.decibel > 80 else "medium" if payload.decibel > 70 else "low",
+            })
+            info["criteria"].append({
+                "name": "지속 시간",
+                "value": f"{payload.duration:.1f}초",
+                "level": "high" if payload.duration > 2.0 else "medium",
+            })
+
+        elif alert.alert_type == AlertType.EMOTION:
+            payload: EmotionPayload = alert.payload
+            info["criteria"].append({
+                "name": "감정",
+                "value": payload.emotion.value,
+                "level": "high" if payload.emotion in (EmotionType.FEARFUL, EmotionType.SAD) else "medium",
+            })
+            info["criteria"].append({
+                "name": "신뢰도",
+                "value": f"{payload.confidence * 100:.0f}%",
+                "level": "high" if payload.confidence > 0.85 else "medium" if payload.confidence > 0.7 else "low",
+            })
+            if payload.intensity:
+                info["criteria"].append({
+                    "name": "강도",
+                    "value": f"{payload.intensity * 100:.0f}%",
+                    "level": "high" if payload.intensity > 0.7 else "medium",
+                })
 
     async def _publish_alert(
         self,
