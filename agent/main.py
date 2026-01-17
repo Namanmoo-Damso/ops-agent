@@ -36,11 +36,11 @@ from .handlers.session import (
 from .handlers.takeover import TakeoverHandler
 from .handlers.transcript import TranscriptHandler
 from .llm_factory import create_llm
-from .personality.elderly_companion import CallDirection, ElderlyCompanionAgent
 from .rag_client import get_shared_rag_client
 from .services.api_client import fetch_call_context, notify_call_end
 from .services.redis_pubsub import get_redis_client, publish_call_end
 from .userdata import SessionUserdata
+from .voice_agent import CallDirection, VoiceAgent
 
 # Agent name for routing
 AGENT_NAME = os.getenv("AGENT_NAME", "voice-agent")
@@ -348,7 +348,7 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"Target participant: {target_identity}")
 
     # Create and start agent with conversation context
-    agent = ElderlyCompanionAgent(
+    agent = VoiceAgent(
         ward_context=ward_context,  # Empty string if RAG failed/timed out
         call_direction=call_direction,
         latitude=latitude,

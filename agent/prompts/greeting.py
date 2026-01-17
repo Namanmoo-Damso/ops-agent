@@ -57,7 +57,16 @@ class GreetingManagerMixin:
         **kwargs,
     ):
         """call_direction 초기화."""
+
+        # ward_context가 kwargs에 있다면 꺼내오고(pop), 없으면 None을 반환합니다.
+        ward_context = kwargs.pop("ward_context", None)
+
+        # 이제 ward_context가 제거된 kwargs를 상위로 전달하므로 에러가 나지 않습니다.
         super().__init__(*args, **kwargs)
+
+        # 만약 이 클래스에서도 ward_context 정보가 필요하다면 저장해둡니다.
+        self.ward_context = ward_context
+
         if isinstance(call_direction, CallDirection):
             self.call_direction = call_direction
         else:
@@ -70,7 +79,7 @@ class GreetingManagerMixin:
     async def on_enter(self) -> None:
         """Agent enters session - Push-based greeting approach."""
         logger.info(
-            "ElderlyCompanionAgent entering with direction=%s",
+            "VoiceAgent entering with direction=%s",
             self.call_direction.value,
         )
 
