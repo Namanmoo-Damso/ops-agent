@@ -8,8 +8,8 @@ from typing import Optional
 import redis
 import redis.asyncio as redis_async
 
-from config import ConfigError, validate_env_vars
-from constants import (
+from ..config import ConfigError, validate_env_vars
+from ..constants import (
     TRANSCRIPT_CHANNEL,
     CALL_END_CHANNEL,
     GREETING_CHANNEL_PREFIX,

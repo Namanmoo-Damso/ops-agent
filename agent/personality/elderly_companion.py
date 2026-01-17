@@ -13,9 +13,9 @@ from typing import Union
 
 from livekit.agents import Agent
 
+from ..prompts.greeting import CallDirection, GreetingManagerMixin
+from ..tools.memory import MemoryToolMixin
 from .agent_metrics import AgentMetricsMixin
-from .greeting_manager import CallDirection, GreetingManagerMixin
-from .memory_tool import MemoryToolMixin
 from .persona_manager import PersonaManagerMixin
 
 logger = logging.getLogger(__name__)

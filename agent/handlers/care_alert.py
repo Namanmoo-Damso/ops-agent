@@ -17,7 +17,7 @@ from typing import Optional, Callable, Awaitable, Union
 
 from livekit import rtc
 
-from services.api_client import send_care_alert, acknowledge_care_alert
+from ..services.api_client import send_care_alert, acknowledge_care_alert
 
 logger = logging.getLogger(__name__)
 

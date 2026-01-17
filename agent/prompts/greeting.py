@@ -10,13 +10,14 @@ import time
 from enum import Enum
 from typing import Callable, Optional, Protocol, Union
 
-from constants import TIMEOUT_GREETING_FETCH
-from services.redis_pubsub import subscribe_to_greeting
+from ..constants import TIMEOUT_GREETING_FETCH
+from ..services.redis_pubsub import subscribe_to_greeting
 
 logger = logging.getLogger(__name__)
 
 MIN_ADDITIONAL_CONTENT_LENGTH = 6
 MIN_FULL_GREETING_EXTRA_CHARS = 10
+
 
 class SessionUserdataLike(Protocol):
     """Minimal session userdata shape needed for greeting flow."""
@@ -29,8 +30,7 @@ class AgentSessionLike(Protocol):
 
     userdata: SessionUserdataLike
 
-    def say(self, text: str, allow_interruptions: bool) -> None:
-        ...
+    def say(self, text: str, allow_interruptions: bool) -> None: ...
 
 
 class CallDirection(Enum):
@@ -41,8 +41,8 @@ class CallDirection(Enum):
 
 
 # Greeting message constants
-GREETING_OUTBOUND = "안녕하세요 어르신, 저 소담이에요."
-GREETING_INBOUND = "네, 여보세요. 소담입니다."
+GREETING_OUTBOUND = "안녕하세요 어르신, 저 소담소담소담이에요."
+GREETING_INBOUND = "네, 여보세요. 소담소담소담이에요."
 
 
 class GreetingManagerMixin:
@@ -87,36 +87,50 @@ class GreetingManagerMixin:
 
         if hasattr(session, "userdata") and hasattr(session.userdata, "ward_id"):
             ward_id = session.userdata.ward_id
-            logger.info(f"[greeting] Checking for personalized greeting (ward={ward_id})")
+            logger.info(
+                f"[greeting] Checking for personalized greeting (ward={ward_id})"
+            )
 
             greeting_received = asyncio.Event()
             start_time = time.monotonic()
 
             async def on_greeting_cached(personalized_greeting: str) -> None:
                 elapsed = time.monotonic() - start_time
-                logger.info(f"[greeting] From cache after {elapsed:.2f}s (ward={ward_id})")
+                logger.info(
+                    f"[greeting] From cache after {elapsed:.2f}s (ward={ward_id})"
+                )
                 greeting_received.set()
                 session.say(personalized_greeting, allow_interruptions=False)
 
             async def on_greeting_pubsub(personalized_greeting: str) -> None:
                 elapsed = time.monotonic() - start_time
-                logger.info(f"[greeting] From Pub/Sub after {elapsed:.2f}s (ward={ward_id})")
+                logger.info(
+                    f"[greeting] From Pub/Sub after {elapsed:.2f}s (ward={ward_id})"
+                )
                 greeting_received.set()
                 await self._on_greeting_received(personalized_greeting)
 
-            asyncio.create_task(self._log_greeting_timeout(greeting_received, start_time, ward_id))
             asyncio.create_task(
-                self._fetch_greeting_hybrid(ward_id, fallback_greeting, on_greeting_cached, on_greeting_pubsub)
+                self._log_greeting_timeout(greeting_received, start_time, ward_id)
+            )
+            asyncio.create_task(
+                self._fetch_greeting_hybrid(
+                    ward_id, fallback_greeting, on_greeting_cached, on_greeting_pubsub
+                )
             )
         else:
             logger.warning("Ward ID not available, using static greeting only")
             session.say(fallback_greeting, allow_interruptions=False)
 
     async def _fetch_greeting_hybrid(
-        self, ward_id: str, fallback_greeting: str, on_cached: Callable, on_pubsub: Callable
+        self,
+        ward_id: str,
+        fallback_greeting: str,
+        on_cached: Callable,
+        on_pubsub: Callable,
     ) -> None:
         """Fetch greeting using hybrid Pull/Push approach."""
-        from services.redis_pubsub import get_redis_client
+        from ..services.redis_pubsub import get_redis_client
 
         session = getattr(self, "session", None)
         if session is None:
@@ -155,7 +169,9 @@ class GreetingManagerMixin:
     async def _on_greeting_received(self, personalized_greeting: str) -> None:
         """Process personalized greeting from Pub/Sub."""
         try:
-            logger.info(f"[greeting] Received via Pub/Sub (length={len(personalized_greeting)})")
+            logger.info(
+                f"[greeting] Received via Pub/Sub (length={len(personalized_greeting)})"
+            )
             session = getattr(self, "session", None)
             if session is None:
                 logger.error("Session not initialized when greeting received")
@@ -167,11 +183,15 @@ class GreetingManagerMixin:
                 else GREETING_INBOUND
             )
 
-            if self._normalize_greeting(personalized_greeting) == self._normalize_greeting(static_greeting):
+            if self._normalize_greeting(
+                personalized_greeting
+            ) == self._normalize_greeting(static_greeting):
                 logger.info("[greeting] Same as static, skipping")
                 return
 
-            additional_content = self._extract_additional_content(personalized_greeting, static_greeting)
+            additional_content = self._extract_additional_content(
+                personalized_greeting, static_greeting
+            )
             if additional_content:
                 additional_content = additional_content.strip().lstrip(".").strip()
                 logger.info(f"[greeting] Adding: {additional_content[:50]}...")
@@ -181,13 +201,15 @@ class GreetingManagerMixin:
         except Exception as e:
             logger.error(f"[greeting] Error: {e}", exc_info=True)
 
-    def _extract_additional_content(self, full_greeting: str, static_part: str) -> Optional[str]:
+    def _extract_additional_content(
+        self, full_greeting: str, static_part: str
+    ) -> Optional[str]:
         """Extract additional personalized content from full greeting."""
         full_norm = self._normalize_greeting(full_greeting)
         static_norm = self._normalize_greeting(static_part)
 
         if full_norm.startswith(static_norm):
-            additional = full_norm[len(static_norm):].strip()
+            additional = full_norm[len(static_norm) :].strip()
             if (
                 additional
                 and len(additional) >= MIN_ADDITIONAL_CONTENT_LENGTH
@@ -201,7 +223,10 @@ class GreetingManagerMixin:
                 if len(sentences) >= 2:
                     first_sentence = sentences[0].strip()
                     rest = sentences[1].strip()
-                    if first_sentence == static_norm or first_sentence + "." == static_norm:
+                    if (
+                        first_sentence == static_norm
+                        or first_sentence + "." == static_norm
+                    ):
                         if (
                             rest
                             and len(rest) >= MIN_ADDITIONAL_CONTENT_LENGTH

@@ -55,11 +55,11 @@ services:
     env_file: ./agent.env
     network_mode: host
     restart: unless-stopped
-    command: ['python', 'agent/agent.py', 'start']
+    command: ['python', '-m', 'agent.main', 'start']
     volumes:
       - .:/app
     healthcheck:
-      test: ['CMD-SHELL', 'pgrep -f agent.py || exit 1']
+      test: ['CMD-SHELL', 'pgrep -f agent.main || exit 1']
       interval: 30s
       timeout: 10s
       retries: 3

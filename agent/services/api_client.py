@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 import httpx
 
-from constants import TIMEOUT_CALL_CONTEXT
+from ..constants import TIMEOUT_CALL_CONTEXT
 
 logger = logging.getLogger(__name__)
 

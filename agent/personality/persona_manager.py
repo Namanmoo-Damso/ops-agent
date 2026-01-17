@@ -7,7 +7,7 @@ PersonaManager - 페르소나/시스템 프롬프트 생성
 import logging
 from typing import Union
 
-from .greeting_manager import CallDirection
+from ..prompts.greeting import CallDirection
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ class PersonaManagerMixin:
         """Build agent instructions using YAML-based prompt builder."""
         # Lazy import to avoid circular dependency
         if self._prompt_builder is None:
-            from prompts.builder import PromptBuilder
+            from ..prompts.builder import PromptBuilder
 
             self._prompt_builder = PromptBuilder(template_name="sodam")
 

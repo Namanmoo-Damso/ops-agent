@@ -5,7 +5,6 @@ AgentMetrics - 파이프라인 타이밍 측정
 """
 
 import logging
-import os
 import time
 from typing import AsyncIterable, Optional
 
@@ -13,9 +12,6 @@ from livekit import rtc
 from livekit.agents import Agent, ModelSettings, llm, stt
 
 pipeline_timing_logger = logging.getLogger("PIPELINE_TIMING")
-
-# MCP (Tool calling) toggle - disable for models that don't support tools
-MCP_ENABLED = os.getenv("MCP_ENABLED", "true").lower() == "true"
 
 
 class AgentMetricsMixin:
@@ -60,15 +56,17 @@ class AgentMetricsMixin:
         model_settings: ModelSettings,
     ) -> AsyncIterable[llm.ChatChunk]:
         """Override LLM node to measure LLM timing."""
-        # Force empty tools if MCP disabled (for models without tool support)
-        if not MCP_ENABLED:
-            tools = []
+        # TODO: Implement prompt-based tool calling for models without tool support
+        # For now, disable tools to prevent errors with exaone3.5
+        tools = []
 
         llm_start = time.time()
         self._pipeline_times["llm_start"] = llm_start
         first_chunk = True
 
-        async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
+        async for chunk in Agent.default.llm_node(
+            self, chat_ctx, tools, model_settings
+        ):
             if first_chunk:
                 self._pipeline_times["llm_ttft"] = time.time() - llm_start
                 first_chunk = False

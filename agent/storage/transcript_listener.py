@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import httpx
 import redis.asyncio as redis_async
 
-from constants import (
+from ..constants import (
     TRANSCRIPT_CHANNEL,
     TTS_CHANNEL,
     CALL_END_CHANNEL,
