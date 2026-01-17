@@ -14,9 +14,9 @@ from typing import Union
 from livekit.agents import Agent
 
 from .agent_metrics import AgentMetricsMixin
-from .greeting_manager import GreetingManagerMixin, CallDirection
-from .persona_manager import PersonaManagerMixin
+from .greeting_manager import CallDirection, GreetingManagerMixin
 from .memory_tool import MemoryToolMixin
+from .persona_manager import PersonaManagerMixin
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,9 @@ class ElderlyCompanionAgent(
             latitude: Ward's current location latitude (for weather tools)
             longitude: Ward's current location longitude (for weather tools)
         """
+        # Initialize prompt builder first (before calling _build_instructions)
+        self._prompt_builder = None
+
         # Build instructions with persona (including location if available)
         instructions = self._build_instructions(
             ward_context, call_direction, latitude, longitude
