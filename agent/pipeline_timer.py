@@ -1,5 +1,5 @@
 """
-AgentMetrics - 파이프라인 타이밍 측정
+PipelineTimer - 파이프라인 타이밍 측정
 
 역할: STT/LLM/TTS 노드의 타이밍 측정 및 PIPELINE_TIMING 로그 기록
 """
@@ -14,7 +14,7 @@ from livekit.agents import Agent, ModelSettings, llm, stt
 pipeline_timing_logger = logging.getLogger("PIPELINE_TIMING")
 
 
-class AgentMetricsMixin:
+class PipelineTimerMixin:
     """파이프라인 타이밍 측정을 위한 Mixin 클래스."""
 
     def __init__(self, *args, **kwargs):
