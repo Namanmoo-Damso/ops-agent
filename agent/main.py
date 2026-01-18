@@ -409,7 +409,7 @@ async def entrypoint(ctx: JobContext):
         name="takeover_polling",
     )
 
-    # Start session (this blocks until session ends)
+    # Start session
     await session.start(
         agent=agent,
         room=ctx.room,
@@ -418,6 +418,17 @@ async def entrypoint(ctx: JobContext):
             close_on_disconnect=False,
         ),
     )
+
+    # Wait for room to disconnect (session.start doesn't block in 1.3.x)
+    disconnect_event = asyncio.Event()
+
+    @ctx.room.on("disconnected")
+    def on_room_disconnected():
+        logger.info("Room disconnected")
+        disconnect_event.set()
+
+    # Wait until room disconnects
+    await disconnect_event.wait()
 
     # Session ended - cancel takeover polling
     takeover_task.cancel()

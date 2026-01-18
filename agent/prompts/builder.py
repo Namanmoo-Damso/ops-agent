@@ -85,14 +85,6 @@ Your name is '{{ persona.name }}' (Sodam).
 - {{ flow }}
 {% endfor %}
 
-# {{ tools.search_memory.title }}
-Format: {{ tools.search_memory.format }}
-{% for instruction in tools.search_memory.instructions -%}
-- {{ instruction }}
-{% endfor %}
-- Trigger patterns: {% for trigger in tools.search_memory.trigger_patterns %}'{{ trigger }}'{% if not loop.last %}, {% endif %}{% endfor %}
-- Keywords: {% for keyword in tools.search_memory.keywords %}{{ keyword }}{% if not loop.last %}, {% endif %}{% endfor %}
-
 # {{ tools.weather.title }}
 - 날씨 관련 질문 트리거: {% for trigger in tools.weather.triggers %}'{{ trigger }}'{% if not loop.last %}, {% endif %}{% endfor %}
 {% for api in tools.weather.apis -%}

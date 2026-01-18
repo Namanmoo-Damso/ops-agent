@@ -1,17 +1,29 @@
 services:
-  stt:
-    build: ./stt
-    container_name: whisper-stt
+  vllm:
+    image: vllm/vllm-openai:latest
     network_mode: host
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
     restart: unless-stopped
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      # 런타임 튜닝 (Dockerfile 기본값 오버라이드)
-      - WHISPER_LANGUAGE=ko # 한국어 최적화
-      - WHISPER_BEAM_SIZE=5 # 빔 탐색 크기 (3=빠름, 5=균형, 10=정확)
-      - WHISPER_VAD_FILTER=true # 음성 구간 감지 활성화
-      - WHISPER_VAD_THRESHOLD=0.5 # VAD 민감도 (낮을수록 작은 목소리 감지)
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    command:
+      - --model
+      - Qwen/Qwen3-8B-AWQ
+      - --quantization
+      - awq_marlin
+      - --max-model-len
+      - "4096"
+      - --gpu-memory-utilization
+      - "0.50"
+      - --dtype
+      - half
+      - --trust-remote-code
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - hermes
     deploy:
       resources:
         reservations:
@@ -20,22 +32,29 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      # 서버가 실제로 요청을 받을 준비가 되었는지 확인
       test: ['CMD-SHELL', 'curl -f http://localhost:8000/health || exit 1']
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 30s
+      retries: 30
+      start_period: 120s
 
-  ollama:
-    build: ./llm
+  ai-server:
+    build:
+      context: ./ai_server
+      dockerfile: Dockerfile
+    container_name: ai-server
     network_mode: host
-    volumes:
-      - ollama-models:/root/.ollama
     restart: unless-stopped
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - WHISPER_MODEL=large-v3-turbo
+      - WHISPER_DEVICE=cuda
+      - TTS_DEVICE=cuda
+      - TTS_VOICE=F2
+      - VAD_DEVICE=cuda
+      - TURN_DETECTOR_DEVICE=cuda
+      - MAX_CONCURRENT_REQUESTS=8
     deploy:
       resources:
         reservations:
@@ -44,10 +63,10 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      test: ['CMD', '/bin/ollama', 'list']
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      test: ['CMD-SHELL', 'curl -f http://localhost:8001/health || exit 1']
+      interval: 30s
+      timeout: 10s
+      retries: 5
       start_period: 60s
 
   agent:
@@ -65,9 +84,9 @@ services:
       retries: 3
       start_period: 10s
     depends_on:
-      stt:
+      vllm:
         condition: service_healthy
-      ollama:
+      ai-server:
         condition: service_healthy
 
   transcript-storage:
@@ -75,7 +94,7 @@ services:
     env_file: ./agent.env
     network_mode: host
     restart: unless-stopped
-    command: ['python', 'agent/storage/transcript_listener.py']
+    command: ['python', '-m', 'agent.storage.transcript_listener']
     healthcheck:
       test: ['CMD-SHELL', 'pgrep -f transcript_listener.py || exit 1']
       interval: 30s
@@ -93,10 +112,11 @@ services:
     network_mode: host
     restart: unless-stopped
     healthcheck:
-      test: ['CMD-SHELL', 'curl -f http://localhost:8001/sse || exit 1']
+      test: ['CMD-SHELL', 'curl -f http://localhost:8002/health || exit 1']
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
+
 volumes:
-  ollama-models:
+  huggingface-cache:

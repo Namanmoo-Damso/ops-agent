@@ -5,6 +5,7 @@ PipelineTimer - 파이프라인 타이밍 측정
 """
 
 import logging
+import os
 import time
 from typing import AsyncIterable, Optional
 
@@ -12,6 +13,11 @@ from livekit import rtc
 from livekit.agents import Agent, ModelSettings, llm, stt
 
 pipeline_timing_logger = logging.getLogger("PIPELINE_TIMING")
+logger = logging.getLogger(__name__)
+
+# Max chat context items to prevent token overflow (8192 token limit for most models)
+# Roughly 10-15 turns = ~6000 tokens, leaving room for system prompt + response
+MAX_CONTEXT_ITEMS = int(os.getenv("MAX_CONTEXT_ITEMS", "20"))
 
 
 class PipelineTimerMixin:
@@ -56,9 +62,11 @@ class PipelineTimerMixin:
         model_settings: ModelSettings,
     ) -> AsyncIterable[llm.ChatChunk]:
         """Override LLM node to measure LLM timing."""
-        # TODO: Implement prompt-based tool calling for models without tool support
-        # For now, disable tools to prevent errors with exaone3.5
-        tools = []
+        # Truncate context to prevent token overflow
+        items_before = len(chat_ctx.items)
+        if items_before > MAX_CONTEXT_ITEMS:
+            chat_ctx.truncate(max_items=MAX_CONTEXT_ITEMS)
+            logger.info(f"[LLM] Context truncated: {items_before} -> {len(chat_ctx.items)} items")
 
         llm_start = time.time()
         self._pipeline_times["llm_start"] = llm_start

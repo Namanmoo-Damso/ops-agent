@@ -47,7 +47,8 @@ class AutoRAGMixin:
         last_user_message = None
         try:
             for msg in reversed(chat_ctx.items):
-                if msg.role == "user":
+                # FunctionCallOutput 등 role이 없는 항목은 건너뜀
+                if hasattr(msg, 'role') and msg.role == "user":
                     last_user_message = str(msg.content)
                     break
         except Exception as e:
