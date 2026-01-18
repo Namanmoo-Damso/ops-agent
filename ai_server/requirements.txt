@@ -1,0 +1,36 @@
+# AI Server Dependencies
+# GPU environment required (CUDA 12.4)
+
+# Web Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+
+# Whisper STT (faster-whisper: GPU memory efficient)
+faster-whisper>=1.1.0
+
+# ONNX Runtime for GPU - installed in Dockerfile FIRST to prevent CPU version conflict
+# DO NOT add onnxruntime-gpu here - it's installed before requirements.txt
+
+# LiveKit Plugins (VAD, Turn Detector) - bundled models + GPU support via force_cpu=False
+livekit-plugins-silero>=1.3.0
+livekit-plugins-turn-detector>=1.3.0
+
+# Audio Processing
+numpy>=1.24.0
+scipy>=1.11.0
+
+# Data validation
+pydantic>=2.5.0
+
+# HTTP client
+aiohttp>=3.9.0
+
+# WebSocket support (for real-time streaming)
+websockets>=12.0
+
+# Transformers (for tokenizers - turn detector, embedding)
+transformers>=4.40.0
+
+# HuggingFace Hub (for downloading pre-converted ONNX models)
+huggingface_hub>=0.20.0

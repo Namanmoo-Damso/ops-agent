@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 from fastmcp import FastMCP
+from starlette.responses import JSONResponse
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +22,13 @@ logger = logging.getLogger("kma-mcp-server")
 
 # Create FastMCP server
 mcp = FastMCP("KMA Weather Server")
+
+
+# Add health endpoint for Docker healthcheck
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request):
+    """Health check endpoint for Docker healthcheck."""
+    return JSONResponse({"status": "healthy", "service": "kma-mcp"})
 
 # API Configuration
 KMA_API_BASE = "https://apihub.kma.go.kr"
@@ -672,8 +680,8 @@ async def get_weekly_weather_forecast(
 if __name__ == "__main__":
     print("=" * 50)
     print("KMA MCP Server - Korea Weather")
-    print("Starting HTTP server on port 8001...")
+    print("Starting HTTP server on port 8002...")
     print("=" * 50)
 
     # Run with SSE transport for LiveKit compatibility
-    mcp.run(transport="sse", host="0.0.0.0", port=8001)
+    mcp.run(transport="sse", host="0.0.0.0", port=8002)
