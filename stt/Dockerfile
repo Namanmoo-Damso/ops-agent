@@ -19,7 +19,7 @@ ENV WHISPER__MODEL=deepdml/faster-whisper-large-v3-turbo-ct2
 ENV WHISPER__INFERENCE_DEVICE=cuda
 ENV WHISPER__COMPUTE_TYPE=float16
 
-EXPOSE 8000
+EXPOSE 8003
 
 # 4. 서버 실행
-CMD ["uv", "run", "uvicorn", "--factory", "faster_whisper_server.main:create_app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "uvicorn", "--factory", "faster_whisper_server.main:create_app", "--host", "0.0.0.0", "--port", "8003"]

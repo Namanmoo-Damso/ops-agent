@@ -1,15 +1,24 @@
-FROM python:3.12-slim
+# LiveKit Agent Dockerfile
+# CPU Only - GPU operations delegated to AI Server
 
-# Install minimal system deps
+FROM python:3.12-slim-bookworm
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Seoul
+
+# Install system deps (ffmpeg for audio processing)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+    curl \
+    ffmpeg \
+    libsndfile1 \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 

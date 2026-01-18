@@ -16,12 +16,14 @@ from livekit.agents import Agent
 from .pipeline_timer import PipelineTimerMixin
 from .prompts.greeting import CallDirection, GreetingManagerMixin
 from .tools.auto_rag import AutoRAGMixin
+from .tools.time import TimeToolMixin
 
 logger = logging.getLogger(__name__)
 
 
 class VoiceAgent(
     AutoRAGMixin,
+    TimeToolMixin,
     PipelineTimerMixin,
     GreetingManagerMixin,
     Agent,

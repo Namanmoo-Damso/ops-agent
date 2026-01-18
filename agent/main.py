@@ -23,6 +23,7 @@ from livekit.plugins import aws, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from stt.faster_whisper_client import FasterWhisperSTT
+from .external import ExternalSTT, ExternalTTS, ExternalTurnDetector
 
 from .config import ConfigError, get_optional_config, validate_env_vars
 from .constants import TIMEOUT_RAG_CONTEXT_WARMUP
@@ -52,9 +53,16 @@ KMA_MCP_URL = os.getenv("KMA_MCP_URL")
 # Note: search_memory tool is always enabled regardless of this setting
 MCP_ENABLED = os.getenv("MCP_ENABLED", "true").lower() == "true"
 
-# STT provider selection
-STT_PROVIDER = os.getenv("STT_PROVIDER")  # "aws" | "custom"
+# STT provider selection: aws | custom | external
+STT_PROVIDER = os.getenv("STT_PROVIDER", "aws")
 STT_SERVER_URL = os.getenv("STT_SERVER_URL")
+
+# TTS provider selection: aws | external
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "aws")
+TTS_VOICE = os.getenv("TTS_VOICE", "Seoyeon")
+
+# AI Server URL (for external STT/TTS)
+AI_SERVER_URL = os.getenv("AI_SERVER_URL", "http://localhost:8001")
 
 # Skip validation for download-files command (used during Docker build)
 _is_download_command = "download-files" in sys.argv
@@ -264,8 +272,17 @@ async def entrypoint(ctx: JobContext):
         longitude=longitude,
     )
 
-    # STT provider selection
-    if STT_PROVIDER == "custom" and STT_SERVER_URL:
+    # STT provider selection: aws | custom | external
+    if STT_PROVIDER == "external":
+        stt_instance = ExternalSTT(
+            base_url=AI_SERVER_URL,
+            language="ko",
+            beam_size=5,
+            vad_filter=False,
+            initial_prompt=userdata.get_full_transcript(),
+        )
+        logger.info(f"Using external STT: {AI_SERVER_URL}")
+    elif STT_PROVIDER == "custom" and STT_SERVER_URL:
         stt_instance = FasterWhisperSTT(
             server_url=STT_SERVER_URL,
             language="ko",
@@ -277,6 +294,17 @@ async def entrypoint(ctx: JobContext):
     else:
         stt_instance = aws.STT(language="ko-KR")
         logger.info("Using AWS Transcribe STT")
+
+    # TTS provider selection: aws | external
+    if TTS_PROVIDER == "external":
+        tts_instance = ExternalTTS(
+            base_url=AI_SERVER_URL,
+            voice=TTS_VOICE,
+        )
+        logger.info(f"Using external TTS: {AI_SERVER_URL}")
+    else:
+        tts_instance = aws.TTS(voice=TTS_VOICE)
+        logger.info(f"Using AWS Polly TTS: {TTS_VOICE}")
 
     # Create agent session (MCP only if enabled and URL configured)
     mcp_servers = []
@@ -292,7 +320,7 @@ async def entrypoint(ctx: JobContext):
         userdata=userdata,
         stt=stt_instance,
         llm=create_llm(),  # Dynamic LLM loading from env vars
-        tts=aws.TTS(voice="Seoyeon"),
+        tts=tts_instance,
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
         min_endpointing_delay=0.3,
@@ -381,7 +409,7 @@ async def entrypoint(ctx: JobContext):
         name="takeover_polling",
     )
 
-    # Start session (this blocks until session ends)
+    # Start session
     await session.start(
         agent=agent,
         room=ctx.room,
@@ -390,6 +418,17 @@ async def entrypoint(ctx: JobContext):
             close_on_disconnect=False,
         ),
     )
+
+    # Wait for room to disconnect (session.start doesn't block in 1.3.x)
+    disconnect_event = asyncio.Event()
+
+    @ctx.room.on("disconnected")
+    def on_room_disconnected():
+        logger.info("Room disconnected")
+        disconnect_event.set()
+
+    # Wait until room disconnects
+    await disconnect_event.wait()
 
     # Session ended - cancel takeover polling
     takeover_task.cancel()
