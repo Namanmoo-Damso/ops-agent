@@ -155,6 +155,8 @@ class RagClient:
         ward_id: str,
         query: str,
         limit: int = 5,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
     ) -> List[Dict[str, Any]]:
         """
         Search for similar conversation chunks using Parent-Child structure
@@ -163,6 +165,8 @@ class RagClient:
             ward_id: Ward UUID to search within
             query: Natural language query to search for
             limit: Maximum number of results to return
+            start_date: Search start date (optional, filter results after this date)
+            end_date: Search end date (optional, filter results before this date)
 
         Returns:
             List of results with parent context and snippet
@@ -180,14 +184,22 @@ class RagClient:
             ]
         """
         try:
+            params: Dict[str, Any] = {
+                "wardId": ward_id,
+                "query": query,
+                "limit": limit,
+            }
+
+            # 날짜 필터 추가
+            if start_date:
+                params["startDate"] = start_date.strftime("%Y-%m-%d")
+            if end_date:
+                params["endDate"] = end_date.strftime("%Y-%m-%d")
+
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{self.api_base}/v1/rag/search",
-                    params={
-                        "wardId": ward_id,
-                        "query": query,
-                        "limit": limit,
-                    },
+                    params=params,
                     headers=self._get_headers(),
                     timeout=self.timeout,
                 )

@@ -1,15 +1,21 @@
 """
 Auto-RAG Mixin - 자동 RAG 검색
+
+시간 표현 감지 기능 포함:
+- "이틀 전에 뭐했어?" → 2일 전 날짜로 필터링
+- "어제 뭐 얘기했지?" → 어제 날짜로 필터링
 """
 
 import logging
 import time
-from typing import AsyncIterable
+from typing import AsyncIterable, Optional
+from datetime import datetime
 
 from livekit.agents import ModelSettings, llm
 
 from ..constants import TIMEOUT_RAG_SEARCH_QUICK
 from ..rag.orchestrator import RagOrchestrator
+from ..rag.temporal_parser import get_temporal_parser
 from ..rag_client import get_shared_rag_client
 
 logger = logging.getLogger(__name__)
@@ -59,6 +65,22 @@ class AutoRAGMixin:
             logger.debug("[AutoRAG] No user message found")
             return None
 
+        # 시간 표현 감지
+        temporal_parser = get_temporal_parser()
+        temporal_result = temporal_parser.parse(last_user_message)
+
+        start_date: Optional[datetime] = None
+        end_date: Optional[datetime] = None
+
+        if temporal_result.has_temporal:
+            start_date = temporal_result.start_date
+            end_date = temporal_result.end_date
+            logger.info(
+                f"[AutoRAG] Temporal query detected: '{temporal_result.expression}' "
+                f"→ {start_date.strftime('%Y-%m-%d') if start_date else 'None'} ~ "
+                f"{end_date.strftime('%Y-%m-%d') if end_date else 'None'}"
+            )
+
         rag_start = time.time()
         rag_client = get_shared_rag_client(timeout=TIMEOUT_RAG_SEARCH_QUICK)
 
@@ -71,6 +93,8 @@ class AutoRAGMixin:
                 ward_id=ward_id,
                 query=last_user_message,
                 limit=3,
+                start_date=start_date,
+                end_date=end_date,
             )
 
             rag_duration = time.time() - rag_start
