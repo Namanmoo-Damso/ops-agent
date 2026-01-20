@@ -15,7 +15,7 @@ services:
       - --quantization
       - awq_marlin
       - --max-model-len
-      - "8192"
+      - "32768"
       - --gpu-memory-utilization
       - "0.65"
       - --dtype
