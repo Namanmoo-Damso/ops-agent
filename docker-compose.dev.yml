@@ -15,15 +15,16 @@ services:
       - --quantization
       - awq_marlin
       - --max-model-len
-      - "4096"
+      - "8192"
       - --gpu-memory-utilization
-      - "0.50"
+      - "0.65"
       - --dtype
       - half
       - --trust-remote-code
       - --enable-auto-tool-choice
       - --tool-call-parser
       - hermes
+      - --enable-prefix-caching
     deploy:
       resources:
         reservations:
@@ -69,6 +70,16 @@ services:
       retries: 5
       start_period: 60s
 
+  vllm-warmup:
+    build: .
+    env_file: ./agent.env
+    network_mode: host
+    command: ['python', '-m', 'agent.warmup_service']
+    restart: 'no'
+    depends_on:
+      vllm:
+        condition: service_healthy
+
   agent:
     build: .
     env_file: ./agent.env
@@ -88,6 +99,8 @@ services:
         condition: service_healthy
       ai-server:
         condition: service_healthy
+      vllm-warmup:
+        condition: service_completed_successfully
 
   transcript-storage:
     build: .

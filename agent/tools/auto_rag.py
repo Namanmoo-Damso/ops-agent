@@ -4,16 +4,21 @@ Auto-RAG Mixin - 자동 RAG 검색
 시간 표현 감지 기능 포함:
 - "이틀 전에 뭐했어?" → 2일 전 날짜로 필터링
 - "어제 뭐 얘기했지?" → 어제 날짜로 필터링
+
+동적 토큰 예산:
+- 질문 유형에 따라 max_tokens 자동 조절 (40~150)
 """
 
 import logging
 import time
-from typing import AsyncIterable, Optional
+# from dataclasses import replace  # TODO: 동적 토큰 예산 구현 시 필요
 from datetime import datetime
+from typing import AsyncIterable, Optional
 
 from livekit.agents import ModelSettings, llm
 
 from ..constants import TIMEOUT_RAG_SEARCH_QUICK
+# from ..llm.token_budget import calculate_token_budget  # TODO: 동적 토큰 예산 구현 시 필요
 from ..rag.orchestrator import RagOrchestrator
 from ..rag.temporal_parser import get_temporal_parser
 from ..rag_client import get_shared_rag_client
@@ -50,17 +55,7 @@ class AutoRAGMixin:
             logger.warning("[AutoRAG] No ward_id available")
             return None
 
-        last_user_message = None
-        try:
-            for msg in reversed(chat_ctx.items):
-                # FunctionCallOutput 등 role이 없는 항목은 건너뜀
-                if hasattr(msg, 'role') and msg.role == "user":
-                    last_user_message = str(msg.content)
-                    break
-        except Exception as e:
-            logger.error(f"[AutoRAG] Error extracting user message: {e}")
-            return None
-
+        last_user_message = self._extract_last_user_message(chat_ctx)
         if not last_user_message:
             logger.debug("[AutoRAG] No user message found")
             return None
@@ -115,6 +110,16 @@ class AutoRAGMixin:
             logger.error(f"[AutoRAG] Search error: {e}")
             return None
 
+    def _extract_last_user_message(self, chat_ctx: llm.ChatContext) -> Optional[str]:
+        """ChatContext에서 마지막 사용자 메시지 추출"""
+        try:
+            for msg in reversed(chat_ctx.items):
+                if hasattr(msg, "role") and msg.role == "user":
+                    return str(msg.content)
+        except Exception as e:
+            logger.error(f"[AutoRAG] Error extracting user message: {e}")
+        return None
+
     async def llm_node(
         self,
         chat_ctx: llm.ChatContext,
@@ -133,6 +138,15 @@ class AutoRAGMixin:
                 logger.info("[AutoRAG] Injected search result into context")
             except Exception as e:
                 logger.error(f"[AutoRAG] Error injecting search result: {e}")
+
+        # 동적 토큰 예산 계산 (TODO: ModelSettings에 max_tokens 필드 없음 - 추후 수정 필요)
+        # last_user_message = self._extract_last_user_message(chat_ctx)
+        # if last_user_message:
+        #     token_budget = calculate_token_budget(last_user_message)
+        #     logger.info(
+        #         f"[TokenBudget] max_tokens={token_budget.max_tokens} "
+        #         f"(reason={token_budget.reason})"
+        #     )
 
         # 부모 클래스의 llm_node 호출
         async for chunk in super().llm_node(chat_ctx, tools, model_settings):

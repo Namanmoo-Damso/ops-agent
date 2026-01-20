@@ -2,16 +2,14 @@
 Prompt Builder - YAML + Jinja2 기반 프롬프트 빌더
 
 역할: sodam.yaml을 읽어서 Jinja2 템플릿으로 시스템 프롬프트 생성
+버전: 2.0 - 한국어 품질 강화
 """
 
 import logging
-from datetime import datetime
 from pathlib import Path
 
 import yaml
 from jinja2 import Template
-
-from ..constants import AGENT_TZINFO
 
 logger = logging.getLogger(__name__)
 
@@ -36,170 +34,194 @@ class PromptBuilder:
 
         logger.info(f"Loaded prompt template: {yaml_path}")
 
-        # Jinja2 메인 템플릿
+        # Jinja2 메인 템플릿 (100% 정적, 100% 한국어)
         self.template_str = """
-#############################################
-# 절대 금지 규칙 (ABSOLUTE PROHIBITIONS)
-#############################################
+##################################################
+# 절대 금지 규칙
+##################################################
 아래 규칙을 어기면 대화가 실패합니다. 반드시 지키세요:
 
 1. 이모지 절대 금지: 😊 😄 ❤️ 등 모든 이모지 사용 금지
 2. 대화 중 "안녕하세요" 금지: 첫 인사 이후에는 절대 "안녕하세요"로 시작하지 마세요
 3. 조기 작별 인사 금지: 어르신이 먼저 끊겠다고 하기 전에는 "좋은 하루 보내세요" 등 작별 인사 금지
-4. 영어 금지: 모든 응답은 한국어로만
-5. 엉뚱한 답변 금지: 어르신이 말한 내용에만 응답하세요
+4. 외국어 금지: 모든 응답은 한국어로만
+5. 문맥 이탈 금지: 어르신이 말씀하신 내용에만 응답하세요
+6. 연속 질문 금지: 질문은 한 번에 하나만
 
-#############################################
+##################################################
 
-You are a {{ persona.role }}.
-Your name is '{{ persona.name }}' (Sodam).
+# 당신의 역할
+당신은 '{{ persona.name }}'입니다. {{ persona.role }}입니다.
 
-# 페르소나 성격
+# 성격
 {% for trait in persona.personality -%}
 - {{ trait }}
 {% endfor %}
 
-# 현재 시각 (한국 시간)
-- 지금은 {{ current_time }} (KST) 입니다
-- 오늘 날짜: {{ current_date }}
-
-# CRITICAL RULE: Language
+##################################################
+# 핵심 언어 규칙
+##################################################
 {% for rule in language.critical_rules -%}
 - {{ rule }}
 {% endfor %}
 
-{% if location_info -%}
-# 어르신 위치 정보
-- 위도(latitude): {{ location_info.latitude }}
-- 경도(longitude): {{ location_info.longitude }}
-- 날씨 조회 시 이 좌표를 사용하세요
+##################################################
+# 말하기 스타일
+##################################################
+{% for rule in output_rules.speech_style -%}
+- {{ rule }}
+{% endfor %}
 
-{% endif -%}
+##################################################
+# 한국어 문법 규칙 (중요!)
+##################################################
+{% for rule in output_rules.grammar_and_spelling -%}
+- {{ rule }}
+{% endfor %}
+
+# 주술 호응 규칙
+{% for rule in output_rules.subject_predicate_agreement -%}
+- {{ rule }}
+{% endfor %}
+
+# 숫자/서식 규칙
+{% for rule in output_rules.formatting -%}
+- {{ rule }}
+{% endfor %}
+
+##################################################
+# 문맥 일치 규칙 (매우 중요!)
+##################################################
+{% for rule in output_rules.context_matching -%}
+- {{ rule }}
+{% endfor %}
+
+##################################################
+# 대화 연속성 규칙
+##################################################
+{% for rule in output_rules.conversation_continuity -%}
+- {{ rule }}
+{% endfor %}
+
+##################################################
+# 감정 공감 규칙
+##################################################
+{% for rule in emotional_intelligence.empathy_rules -%}
+- {{ rule }}
+{% endfor %}
+
+# 톤 매칭
+{% for rule in emotional_intelligence.tone_matching -%}
+- {{ rule }}
+{% endfor %}
+
+##################################################
+# 대화 흐름 원칙
+##################################################
+{% for principle in conversational_flow.principles -%}
+- {{ principle }}
+{% endfor %}
+
+##################################################
+# 나쁜 예시 (절대 하지 말 것)
+##################################################
+{% for example in conversational_flow.bad_examples -%}
+- 잘못된 예: "{{ example.wrong }}"
+  → 이유: {{ example.reason }}
+{% endfor %}
+
+##################################################
+# 대화 예시 (이 패턴을 따라하세요)
+##################################################
+아래 예시처럼 응답하세요. 물음표(?)는 응답당 1개만 사용합니다.
+
+{% for example in conversational_flow.few_shot_examples -%}
+어르신: "{{ example.input }}"
+소담: "{{ example.output }}"
+
+{% endfor %}
+
+##################################################
+# 문법 예시 (올바른 한국어)
+##################################################
+{% for example in conversational_flow.grammar_examples -%}
+- 잘못: "{{ example.wrong }}" → 올바름: "{{ example.correct }}"
+  → 이유: {{ example.reason }}
+{% endfor %}
+
+##################################################
+# 답변 전 자기 점검 (매 응답 전 확인)
+##################################################
+{% for rule in self_check.rules -%}
+- {{ rule }}
+{% endfor %}
+
+##################################################
+# 도구 사용
+##################################################
+
+# {{ tools.ward_info.title }}
+{% for instruction in tools.ward_info.instructions -%}
+- {{ instruction }}
+{% endfor %}
+
+# {{ tools.time.title }}
+{% for instruction in tools.time.instructions -%}
+- {{ instruction }}
+{% endfor %}
+
+# {{ tools.weather.title }}
+{% for instruction in tools.weather.instructions -%}
+- {{ instruction }}
+{% endfor %}
+
+##################################################
+# {{ interruptions.title }}
+##################################################
+{% for rule in interruptions.rules -%}
+- {{ rule }}
+{% endfor %}
+
+##################################################
+# {{ guardrails.title }}
+##################################################
+{% for rule in guardrails.rules -%}
+- {{ rule.detail }}
+{% endfor %}
+
 {% if retrieved_memories -%}
+##################################################
 # {{ memory_context.title }}
+##################################################
 {% for rule in memory_context.instructions -%}
 - {{ rule }}
 {% endfor %}
 
 {{ retrieved_memories }}
-
 {% endif -%}
-{% if ward_context -%}
-
-# 어르신 정보 (참고용)
-{{ ward_context }}
-
-{% endif -%}
-# 말하기 스타일
-{% for rule in output_rules.speech_style -%}
-- {{ rule }}
-{% endfor %}
-
-# 맞춤법 및 문법
-{% for rule in output_rules.grammar_and_spelling -%}
-- {{ rule }}
-{% endfor %}
-
-# 포맷팅
-{% for rule in output_rules.formatting -%}
-- {{ rule }}
-{% endfor %}
-
-# CRITICAL: 대화 연속성 규칙
-{% for rule in output_rules.conversation_continuity -%}
-- {{ rule }}
-{% endfor %}
-
-# CRITICAL: 문맥 일치 규칙
-{% for rule in output_rules.context_matching -%}
-- {{ rule }}
-{% endfor %}
-
-# 감정 지능 - 공감 규칙
-{% for rule in emotional_intelligence.empathy_rules -%}
-- {{ rule }}
-{% endfor %}
-
-# 감정 지능 - 톤 매칭
-{% for rule in emotional_intelligence.tone_matching -%}
-- {{ rule }}
-{% endfor %}
-
-# 대화 흐름 원칙
-{% for principle in conversational_flow.principles -%}
-- {{ principle }}
-{% endfor %}
-
-# 나쁜 예시 (하지 말 것)
-{% for example in conversational_flow.bad_examples -%}
-- BAD: "{{ example.wrong }}" → 이유: {{ example.reason }}
-{% endfor %}
-
-# 좋은 예시 (참고)
-{% for example in conversational_flow.good_examples -%}
-- 상황: {{ example.context }} → 응답: "{{ example.response }}"
-{% endfor %}
-
-# {{ tools.weather.title }}
-- 날씨 관련 질문 트리거: {% for trigger in tools.weather.triggers %}'{{ trigger }}'{% if not loop.last %}, {% endif %}{% endfor %}
-{% for api in tools.weather.apis -%}
-- {{ api.name }}: {{ api.description }}
-{% endfor -%}
-{% for instruction in tools.weather.instructions -%}
-- {{ instruction }}
-{% endfor %}
-
-# {{ interruptions.title }}
-{% for rule in interruptions.rules -%}
-- {{ rule }}
-{% endfor %}
-
-# {{ guardrails.title }}
-{% for rule in guardrails.rules -%}
-- {{ rule.detail }}
-{% endfor %}
-
-# {{ topics.title }}
-{% for topic in topics.list -%}
-- {{ topic }}
-{% endfor -%}
 """.strip()
 
     def build(
         self,
-        ward_context: str = "",
-        latitude: float | None = None,
-        longitude: float | None = None,
         retrieved_memories: str = "",
     ) -> str:
         """
         Build full agent instructions.
 
+        This method generates a 100% static system prompt.
+        Ward-specific data (context, location) is accessed via tools:
+        - get_ward_info(): Returns ward context (name, age, etc.)
+        - get_ward_location(): Returns latitude/longitude for weather
+
         Args:
-            ward_context: Pre-fetched context about the ward
-            latitude: Ward's location latitude
-            longitude: Ward's location longitude
-            retrieved_memories: Formatted RAG memory segments
+            retrieved_memories: Formatted RAG memory segments (optional)
 
         Returns:
-            Complete instruction string
+            Complete instruction string (static, cacheable by vLLM)
         """
         template = Template(self.template_str)
 
-        # 현재 시각 (KST)
-        tz = AGENT_TZINFO
-        local_now = datetime.now(tz)
-        current_time = local_now.strftime("%Y년 %m월 %d일 %H시 %M분")
-        current_date = local_now.strftime("%Y년 %m월 %d일")
-
-        # 위치 정보
-        location_info = None
-        if latitude is not None and longitude is not None:
-            location_info = {"latitude": latitude, "longitude": longitude}
-
-        # RAG 메모리 지침
-
-        # 템플릿 렌더링
+        # 템플릿 렌더링 (ward별 동적 데이터 없음)
         rendered_prompt = template.render(
             persona=self.config["persona"],
             language=self.config["language"],
@@ -210,12 +232,8 @@ Your name is '{{ persona.name }}' (Sodam).
             interruptions=self.config["interruptions"],
             guardrails=self.config["guardrails"],
             memory_context=self.config.get("guardrails", {}).get("memory_context", {}),
-            topics=self.config["topics"],
-            current_time=current_time,
-            current_date=current_date,
-            location_info=location_info,
+            self_check=self.config.get("self_check", {}),
             retrieved_memories=retrieved_memories,
-            ward_context=ward_context,
         )
 
         return rendered_prompt

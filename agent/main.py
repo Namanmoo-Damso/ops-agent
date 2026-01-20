@@ -263,13 +263,14 @@ async def entrypoint(ctx: JobContext):
         # If context loading fails for any reason, continue without it
         logger.warning(f"Context loading failed, starting agent without context: {e}")
 
-    # Create session userdata
+    # Create session userdata (ward_context stored here for tool access)
     userdata = SessionUserdata(
         ward_id=ward_id,
         call_id=call_id,
         call_direction=call_direction,
         latitude=latitude,
         longitude=longitude,
+        ward_context=ward_context,
     )
 
     # STT provider selection: aws | custom | external
@@ -330,7 +331,12 @@ async def entrypoint(ctx: JobContext):
 
     # Initialize handlers
     takeover_handler = TakeoverHandler(ctx.room, session)
-    transcript_handler = TranscriptHandler(call_id, ctx.room)
+
+    # 키워드 감지 시 알림만 발송, 응답은 LLM이 동적으로 생성
+    # (session.say()로 고정 메시지를 재생하면 LLM 응답과 충돌)
+    transcript_handler = TranscriptHandler(
+        call_id, ctx.room, ward_id, on_keyword_detected=None
+    )
     session_end_handler = SessionEndHandler(call_id, ward_id)
 
     # === Care Alert Handler ===
@@ -382,6 +388,9 @@ async def entrypoint(ctx: JobContext):
         latitude=latitude,
         longitude=longitude,
     )
+
+    # Debug: Log registered tools
+    logger.info(f"[Agent] Registered tools: {agent.tools}")
 
     # VAD timing: track when user starts/stops speaking
     pipeline_timing_logger = logging.getLogger("PIPELINE_TIMING")
