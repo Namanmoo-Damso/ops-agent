@@ -78,6 +78,8 @@ async def send_care_alert(
     call_id: Optional[str] = None,
     room_name: Optional[str] = None,
     agent_response: Optional[str] = None,
+    risk_level: Optional[str] = None,
+    risk_score: Optional[float] = None,
 ) -> Optional[str]:
     """
     Send care alert to backend API.
@@ -91,6 +93,8 @@ async def send_care_alert(
         call_id: Optional call UUID for correlation
         room_name: Optional LiveKit room name
         agent_response: Optional agent response message
+        risk_level: Optional risk level (normal, caution, critical)
+        risk_score: Optional risk score (0.0 to 1.0)
 
     Returns:
         alertId if sent successfully, None otherwise
@@ -118,6 +122,10 @@ async def send_care_alert(
         request_body["roomName"] = room_name
     if agent_response:
         request_body["agentResponse"] = agent_response
+    if risk_level:
+        request_body["riskLevel"] = risk_level
+    if risk_score is not None:
+        request_body["riskScore"] = risk_score
 
     try:
         async with httpx.AsyncClient() as client:
@@ -176,4 +184,151 @@ async def acknowledge_care_alert(alert_id: str) -> bool:
         return False
     except Exception as e:
         logger.error(f"Failed to acknowledge care alert via API: {e}")
+        return False
+
+
+async def clear_room_danger(room_name: str) -> bool:
+    """
+    Clear danger state for a room when agent session starts.
+
+    Args:
+        room_name: LiveKit room name
+
+    Returns:
+        True if cleared successfully, False otherwise
+    """
+    if not API_BASE:
+        logger.error("API_BASE_URL not configured")
+        return False
+
+    if not room_name:
+        logger.warning("clear_room_danger called with empty room_name")
+        return False
+
+    encoded_room = quote(room_name, safe='')
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{API_BASE}/v1/livekit/rooms/{encoded_room}/danger",
+                json={"isDanger": False},
+                headers=get_auth_headers(),
+                timeout=3.0,
+            )
+            response.raise_for_status()
+            logger.info(f"Room danger state cleared: room={room_name}")
+            return True
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Clear room danger API error: room={room_name} status={e.response.status_code}")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to clear room danger: room={room_name} error={e}")
+        return False
+
+
+async def escalate_care_alert(alert_id: str) -> bool:
+    """
+    Escalate a care alert from caution to critical via backend API.
+
+    Called when iOS user presses "도움이 필요해요" (need help) button.
+    The server will update the alert status and set escalatedFromCaution flag
+    in room metadata to prevent duplicate alerts.
+
+    Args:
+        alert_id: Alert UUID to escalate
+
+    Returns:
+        True if escalated successfully, False otherwise
+    """
+    if not API_BASE:
+        logger.error("API_BASE_URL not configured")
+        return False
+
+    if not alert_id:
+        logger.warning("escalate_care_alert called with empty alert_id")
+        return False
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(
+                f"{API_BASE}/v1/guardians/alerts/{alert_id}/escalate",
+                headers=get_auth_headers(),
+                timeout=5.0,
+            )
+            response.raise_for_status()
+            logger.info(f"Care alert escalated via API: alertId={alert_id}")
+            return True
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"Escalate alert API error: alertId={alert_id} status={e.response.status_code}"
+        )
+        return False
+    except Exception as e:
+        logger.error(f"Failed to escalate care alert via API: {e}")
+        return False
+
+
+async def send_sensor_emotion(
+    ward_id: str,
+    timestamp: int,
+    emotion: str,
+    confidence: float,
+    intensity: Optional[float] = None,
+) -> bool:
+    """
+    Send sensor emotion data to backend API for buffering.
+
+    Uses the care-alerts endpoint with alertType='emotion'.
+    API buffers emotion data and aggregates every 10 minutes for reports.
+
+    Args:
+        ward_id: Ward UUID
+        timestamp: Event timestamp (Unix ms)
+        emotion: Emotion type (neutral, happy, sad, angry, fearful, disgusted, surprised)
+        confidence: Confidence score (0.0 to 1.0)
+        intensity: Optional intensity score (0.0 to 1.0)
+
+    Returns:
+        True if sent successfully, False otherwise
+    """
+    if not API_BASE:
+        logger.error("API_BASE_URL not configured")
+        return False
+
+    # Build request body matching CreateCareAlertDto for emotion buffering
+    request_body = {
+        "timestamp": timestamp,
+        "alertType": "emotion",
+        "severity": "low",  # Sensor stream emotions are non-alert (low severity)
+        "data": {
+            "type": "emotion",
+            "payload": {
+                "emotion": emotion,
+                "confidence": confidence,
+            },
+        },
+        "source": "sensor_stream",  # Mark as sensor stream (not alert)
+    }
+
+    # Add optional intensity
+    if intensity is not None:
+        request_body["data"]["payload"]["intensity"] = intensity
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{API_BASE}/v1/care-alerts",
+                json=request_body,
+                headers={
+                    **get_auth_headers(),
+                    "X-Ward-Id": ward_id,
+                },
+                timeout=3.0,  # Shorter timeout for high-frequency sensor data
+            )
+            response.raise_for_status()
+            return True
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Sensor emotion API error: status={e.response.status_code}")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to send sensor emotion via API: {e}")
         return False

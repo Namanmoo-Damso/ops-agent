@@ -13,11 +13,13 @@ from livekit import rtc
 from livekit.agents import Agent, ModelSettings, llm, stt
 
 pipeline_timing_logger = logging.getLogger("PIPELINE_TIMING")
+context_logger = logging.getLogger("CHAT_CONTEXT")
 logger = logging.getLogger(__name__)
 
 # Max chat context items to prevent token overflow (8192 token limit for most models)
-# Roughly 10-15 turns = ~6000 tokens, leaving room for system prompt + response
-MAX_CONTEXT_ITEMS = int(os.getenv("MAX_CONTEXT_ITEMS", "20"))
+# 대화는 Redis에 실시간 저장되고, 과거 맥락은 AutoRAG가 필요시 주입하므로
+# LLM 컨텍스트에는 즉각적인 대화 흐름용으로 최근 6개만 유지
+MAX_CONTEXT_ITEMS = int(os.getenv("MAX_CONTEXT_ITEMS", "6"))
 
 
 class PipelineTimerMixin:
@@ -55,6 +57,41 @@ class PipelineTimerMixin:
 
         return timed_stt_events()
 
+    def _estimate_tokens(self, text: str) -> int:
+        """대략적인 토큰 수 추정 (한글 기준 ~2자당 1토큰, 영문 ~4자당 1토큰)."""
+        if not text:
+            return 0
+        # 간단한 휴리스틱: 평균적으로 3자당 1토큰
+        return len(text) // 3 + 1
+
+    def _log_chat_context(self, chat_ctx: llm.ChatContext, phase: str) -> int:
+        """ChatContext 상세 로깅. 총 추정 토큰 수 반환."""
+        total_tokens = 0
+        items_info = []
+
+        for i, item in enumerate(chat_ctx.items):
+            role = getattr(item, "role", "unknown")
+            content = ""
+            if hasattr(item, "content"):
+                if isinstance(item.content, str):
+                    content = item.content
+                elif isinstance(item.content, list):
+                    content = " ".join(str(c) for c in item.content)
+                else:
+                    content = str(item.content)
+
+            tokens = self._estimate_tokens(content)
+            total_tokens += tokens
+            preview = content[:50].replace("\n", " ") + "..." if len(content) > 50 else content.replace("\n", " ")
+            items_info.append(f"  [{i}] {role}: {tokens}tok | {preview}")
+
+        context_logger.info(
+            f"=== ChatContext ({phase}) ===\n"
+            f"Items: {len(chat_ctx.items)} | EstTokens: ~{total_tokens}\n"
+            + "\n".join(items_info)
+        )
+        return total_tokens
+
     async def llm_node(
         self,
         chat_ctx: llm.ChatContext,
@@ -62,11 +99,18 @@ class PipelineTimerMixin:
         model_settings: ModelSettings,
     ) -> AsyncIterable[llm.ChatChunk]:
         """Override LLM node to measure LLM timing."""
-        # Truncate context to prevent token overflow
+        # 트렁케이트 전 로깅
         items_before = len(chat_ctx.items)
+        tokens_before = self._log_chat_context(chat_ctx, "BEFORE truncate")
+
+        # Truncate context to prevent token overflow
         if items_before > MAX_CONTEXT_ITEMS:
             chat_ctx.truncate(max_items=MAX_CONTEXT_ITEMS)
-            logger.info(f"[LLM] Context truncated: {items_before} -> {len(chat_ctx.items)} items")
+            tokens_after = self._log_chat_context(chat_ctx, "AFTER truncate")
+            context_logger.info(
+                f"[TRUNCATE] {items_before} -> {len(chat_ctx.items)} items | "
+                f"~{tokens_before} -> ~{tokens_after} tokens"
+            )
 
         llm_start = time.time()
         self._pipeline_times["llm_start"] = llm_start

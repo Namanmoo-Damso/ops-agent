@@ -33,6 +33,7 @@ class SessionUserdata:
     call_direction: str = "inbound"  # "inbound" or "outbound"
     latitude: float | None = None  # Ward's current location latitude
     longitude: float | None = None  # Ward's current location longitude
+    ward_context: str = ""  # Pre-fetched context about the ward (name, age, etc.)
     transcripts: list[TranscriptEntry] = field(default_factory=list)
     session_start: datetime = field(default_factory=datetime.now)
 
