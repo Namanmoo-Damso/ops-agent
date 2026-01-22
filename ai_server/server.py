@@ -142,15 +142,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to load STT service: {e}")
 
-    # Load TTS service (Supertonic-2)
-    try:
-        from services.tts_service import TTSService
-        tts_service = TTSService()
-        await tts_service.initialize()
-        logger.info("TTS Service loaded successfully")
-    except Exception as e:
-        logger.warning(f"Failed to load TTS service: {e}")
-        # TTS is optional - don't block startup
+    # Load TTS service (Supertonic-2) - optional, disabled by default
+    if os.getenv("ENABLE_TTS", "false").lower() == "true":
+        try:
+            from services.tts_service import TTSService
+            tts_service = TTSService()
+            await tts_service.initialize()
+            logger.info("TTS Service loaded successfully")
+        except Exception as e:
+            logger.warning(f"Failed to load TTS service: {e}")
+    else:
+        logger.info("TTS Service disabled (ENABLE_TTS != true)")
 
     # Load Turn Detector service
     try:

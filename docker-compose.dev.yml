@@ -17,7 +17,7 @@ services:
       - --max-model-len
       - "32768"
       - --gpu-memory-utilization
-      - "0.65"
+      - "0.55"
       - --dtype
       - half
       - --trust-remote-code
