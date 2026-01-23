@@ -92,15 +92,15 @@ whisper_singleton = WhisperSingleton()
 # ============================================
 # 헬퍼 함수
 # ============================================
-def audio_bytes_to_array(audio_bytes: bytes, sample_rate: int = 16000) -> np.ndarray:
+def audio_bytes_to_array(audio_bytes: bytes, sample_rate: int = 16000) -> tuple[np.ndarray, int]:
     """오디오 바이트를 numpy 배열로 변환.
 
     Args:
         audio_bytes: 오디오 데이터 (WAV 또는 raw PCM)
-        sample_rate: 샘플레이트 (PCM 변환 시 사용)
+        sample_rate: 샘플레이트 (PCM 변환 시 사용, WAV의 경우 무시)
 
     Returns:
-        float32 numpy 배열 (-1.0 ~ 1.0)
+        tuple: (float32 numpy 배열 (-1.0 ~ 1.0), 실제 샘플레이트)
 
     Raises:
         ValueError: 오디오 파싱 실패 시
@@ -109,16 +109,18 @@ def audio_bytes_to_array(audio_bytes: bytes, sample_rate: int = 16000) -> np.nda
     try:
         with io.BytesIO(audio_bytes) as wav_io:
             with wave.open(wav_io, "rb") as wav_file:
+                actual_sample_rate = wav_file.getframerate()
                 frames = wav_file.readframes(wav_file.getnframes())
                 audio_array = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-                return audio_array
+                logger.info(f"[STT] WAV parsed: {len(audio_array)} samples, {actual_sample_rate}Hz")
+                return audio_array, actual_sample_rate
     except Exception:
         pass
 
     # Raw PCM으로 처리 (16-bit signed, mono)
     try:
         audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        return audio_array
+        return audio_array, sample_rate
     except Exception as e:
         raise ValueError(f"Failed to parse audio data: {e}")
 
@@ -209,19 +211,36 @@ class STTService:
         if not self._initialized:
             raise RuntimeError("STT Service not initialized. Call initialize() first.")
 
-        # 오디오 데이터 변환
+        # 오디오 데이터 변환 (WAV의 경우 헤더에서 sample_rate 추출)
         try:
-            audio_array = audio_bytes_to_array(audio_data, sample_rate)
+            audio_array, actual_sample_rate = audio_bytes_to_array(audio_data, sample_rate)
         except ValueError as e:
             raise ValueError(f"Audio parsing failed: {e}")
 
         # 리샘플링 (Whisper는 16kHz 필요)
-        if sample_rate != 16000:
+        if actual_sample_rate != 16000:
             import scipy.signal
 
+            # 리샘플링 전 통계
+            pre_min = float(np.min(audio_array))
+            pre_max = float(np.max(audio_array))
+            pre_len = len(audio_array)
+            logger.info(
+                f"[STT] Pre-resample: {pre_len} samples, min={pre_min:.4f}, max={pre_max:.4f}"
+            )
+
+            logger.info(f"[STT] Resampling from {actual_sample_rate}Hz to 16000Hz")
             audio_array = scipy.signal.resample(
                 audio_array,
-                int(len(audio_array) * 16000 / sample_rate),
+                int(len(audio_array) * 16000 / actual_sample_rate),
+            )
+
+            # 리샘플링 후 통계
+            post_min = float(np.min(audio_array))
+            post_max = float(np.max(audio_array))
+            post_len = len(audio_array)
+            logger.info(
+                f"[STT] Post-resample: {post_len} samples, min={post_min:.4f}, max={post_max:.4f}"
             )
 
         # 동시 요청 제한
@@ -252,35 +271,73 @@ class STTService:
         # 한국어 강제 지정 (자동 감지보다 정확도 높음)
         target_language = language if language else "ko"
 
+        # 오디오 길이 로깅 (16kHz 기준)
+        audio_duration = len(audio_array) / 16000
+
+        # 오디오 통계 로깅 (디버깅용)
+        audio_min = float(np.min(audio_array))
+        audio_max = float(np.max(audio_array))
+        audio_mean = float(np.mean(np.abs(audio_array)))
+        audio_std = float(np.std(audio_array))
+        logger.info(
+            f"[Whisper] Audio stats: min={audio_min:.4f}, max={audio_max:.4f}, "
+            f"mean_abs={audio_mean:.4f}, std={audio_std:.4f}"
+        )
+        logger.info(f"[Whisper] Transcribing {audio_duration:.2f}s audio, lang={target_language}")
+
         segments, info = model.transcribe(
             audio_array,
             language=target_language,
             beam_size=5,  # 정확도 향상 (1 -> 5)
             temperature=0.0,  # 결정론적 출력
             condition_on_previous_text=False,  # 반복 루프 방지
-            no_speech_threshold=0.3,  # 낮춰서 노이즈를 음성으로 잘못 인식 방지
+            no_speech_threshold=0.2,  # 0.4→0.2: 더 적극적으로 음성 인식
             hallucination_silence_threshold=1.0,  # 1초 이상 침묵 시 할루시네이션 스킵
             word_timestamps=True,  # hallucination_silence_threshold 작동 필요
-            vad_filter=True,  # 침묵 구간 스킵
-            vad_parameters={
-                "min_silence_duration_ms": 200,
-                "speech_pad_ms": 100,
-            },
-            # 한국어 인식 개선 - 자주 쓰는 표현 포함
-            initial_prompt="안녕하세요. 지금 몇 시야? 날씨 어때? 몇 도야? 밥 먹었어? 뭐 먹었어? 어디 갔어? 알려줘. 그래. 응. 네.",
+            vad_filter=False,  # LiveKit VAD가 이미 처리함 - 이중 필터링 방지
+            # 한국어/아시아어 세그먼트 드롭 방지 - None으로 필터 비활성화
+            # https://github.com/SYSTRAN/faster-whisper/discussions/349
+            compression_ratio_threshold=None,  # 압축률 필터 비활성화
+            log_prob_threshold=None,  # 확률 필터 비활성화
+            # 한국어 특화 모델은 initial_prompt와 호환되지 않음
+            # (파인튜닝 과정에서 다른 토큰 패턴을 학습)
+            initial_prompt=None,
         )
 
         # 세그먼트 수집
         segment_list = []
         full_text = ""
+        segment_count = 0
 
         for segment in segments:
+            segment_count += 1
             segment_list.append({
                 "start": segment.start,
                 "end": segment.end,
                 "text": segment.text.strip(),
             })
             full_text += segment.text
+
+        # 결과 로깅
+        if segment_count == 0:
+            logger.warning(
+                f"[Whisper] No segments detected! audio={audio_duration:.2f}s, "
+                f"lang_prob={info.language_probability:.3f}"
+            )
+            # 디버깅: 실패한 오디오 저장
+            try:
+                import time
+                debug_path = f"/tmp/whisper_failed_{int(time.time())}.wav"
+                import scipy.io.wavfile
+                scipy.io.wavfile.write(debug_path, 16000, (audio_array * 32767).astype(np.int16))
+                logger.info(f"[Whisper] Debug audio saved: {debug_path}")
+            except Exception as e:
+                logger.warning(f"[Whisper] Failed to save debug audio: {e}")
+        else:
+            logger.info(
+                f"[Whisper] Transcribed: '{full_text.strip()[:50]}...' "
+                f"({segment_count} segments, lang_prob={info.language_probability:.3f})"
+            )
 
         return {
             "text": full_text.strip(),
@@ -326,7 +383,8 @@ class STTService:
                     "min_silence_duration_ms": 200,
                     "speech_pad_ms": 100,
                 },
-                initial_prompt="안녕하세요. 지금 몇 시야? 날씨 어때? 몇 도야? 밥 먹었어? 뭐 먹었어? 어디 갔어? 알려줘. 그래. 응. 네.",
+                # 한국어 특화 모델은 initial_prompt와 호환되지 않음
+                initial_prompt=None,
             )
 
             for segment in segments:

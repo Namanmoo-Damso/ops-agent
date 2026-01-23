@@ -46,10 +46,13 @@ services:
     container_name: ai-server
     network_mode: host
     restart: unless-stopped
+    volumes:
+      - ./models:/opt/models
+      - ./ai_server:/app  # Hot reload: 소스 코드 마운트
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - WHISPER_MODEL=large-v3-turbo
+      - WHISPER_MODEL=/opt/models/whisper-ko-ct2
       - WHISPER_DEVICE=cuda
       - TTS_DEVICE=cuda
       - TTS_VOICE=F2

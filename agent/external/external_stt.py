@@ -75,29 +75,48 @@ class ExternalSTT(stt.STT):
     def _buffer_to_wav(self, buffer) -> bytes:
         """
         Convert various audio buffer/frame types to WAV binary.
+
+        Uses AudioFrame.to_wav_bytes() for reliable WAV creation with correct
+        sample rate, channels, and sample width.
         """
-        # 1. Extract PCM data (handle different types)
+        from livekit.rtc import AudioFrame
+
+        # Use built-in to_wav_bytes() if available (most reliable)
+        if isinstance(buffer, AudioFrame):
+            wav_bytes = buffer.to_wav_bytes()
+            logger.info(
+                f"[ExternalSTT] AudioFrame to WAV: {len(wav_bytes)} bytes, "
+                f"{buffer.sample_rate}Hz, {buffer.num_channels}ch"
+            )
+            return wav_bytes
+
+        # For list of frames, merge first then convert
+        if isinstance(buffer, list) and len(buffer) > 0:
+            from livekit.agents import utils
+            merged_frame = utils.merge_frames(buffer)
+            wav_bytes = merged_frame.to_wav_bytes()
+            logger.info(
+                f"[ExternalSTT] Merged frames to WAV: {len(wav_bytes)} bytes, "
+                f"{merged_frame.sample_rate}Hz, {merged_frame.num_channels}ch"
+            )
+            return wav_bytes
+
+        # Fallback: manual WAV creation for other buffer types
         if hasattr(buffer, "export"):
-            # stt.AudioBuffer type
             pcm_data = buffer.export()
+            sample_rate = getattr(buffer, "sample_rate", 24000)
         elif hasattr(buffer, "data"):
-            # rtc.AudioFrame type
             pcm_data = bytes(buffer.data)
-        elif isinstance(buffer, list):
-            # List of frames
-            pcm_data = b"".join(bytes(f.data) for f in buffer)
+            sample_rate = getattr(buffer, "sample_rate", 24000)
         else:
             raise ValueError(f"Unsupported audio buffer type: {type(buffer)}")
 
-        # 2. Create WAV file (fixed 16kHz mono 16-bit)
-        sample_rate = 16000
-        sample_width = 2
-        channels = 1
+        logger.info(f"[ExternalSTT] Manual WAV: {len(pcm_data)} bytes, {sample_rate}Hz")
 
         wav_buffer = io.BytesIO()
         with wave.open(wav_buffer, "wb") as wav_file:
-            wav_file.setnchannels(channels)
-            wav_file.setsampwidth(sample_width)
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
             wav_file.setframerate(sample_rate)
             wav_file.writeframes(pcm_data)
 
@@ -161,6 +180,7 @@ class ExternalSTT(stt.STT):
 
             text = result.get("text", "").strip()
             if not text:
+                logger.warning(f"[ExternalSTT] Empty transcription returned (audio sent successfully)")
                 return stt.SpeechEvent(
                     type=stt.SpeechEventType.INTERIM_TRANSCRIPT,
                     alternatives=[],

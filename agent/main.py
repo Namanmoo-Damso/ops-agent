@@ -113,9 +113,10 @@ def prewarm(proc: JobProcess):
     try:
         logger.info("Prewarming: Loading VAD model...")
         proc.userdata["vad"] = silero.VAD.load(
-            min_speech_duration=0.05,
-            min_silence_duration=0.5,
-            activation_threshold=0.3,
+            min_speech_duration=0.05,    # 짧은 발화도 감지 (50ms)
+            min_silence_duration=0.4,    # 자연스러운 끊김 방지 (400ms)
+            activation_threshold=0.35,   # 민감도 (기본 0.5보다 낮게)
+            prefix_padding_duration=1.0, # 앞부분 잘림 방지 (1000ms) - 500ms에서 증가
         )
         logger.info("Prewarm complete")
     except Exception as e:
@@ -324,8 +325,8 @@ async def entrypoint(ctx: JobContext):
         tts=tts_instance,
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
-        min_endpointing_delay=0.3,
-        max_endpointing_delay=1.5,
+        min_endpointing_delay=0.3,   # VAD silence와 균형
+        max_endpointing_delay=1.2,   # 긴 발화 대응
         mcp_servers=mcp_servers,
     )
 

@@ -147,12 +147,12 @@ class GreetingManagerMixin:
         )
 
         try:
-            # 1.5초 동안 Pub/Sub 메시지 대기
-            await asyncio.wait_for(greeting_received.wait(), timeout=1.5)
+            # 0.5초 동안 Pub/Sub 메시지 대기 (1.5초→0.5초: 첫 인사 지연 단축)
+            await asyncio.wait_for(greeting_received.wait(), timeout=0.5)
         except asyncio.TimeoutError:
-            # 1.5초 내에 안 오면 정적 인사말 송출
+            # 0.5초 내에 안 오면 정적 인사말 송출
             is_static_spoken = True
-            logger.info("[greeting] 1.5s wait timeout, saying static greeting first")
+            logger.info("[greeting] 0.5s wait timeout, saying static greeting first")
             session.say(self._static_greeting, allow_interruptions=False)
 
     async def _log_greeting_timeout(

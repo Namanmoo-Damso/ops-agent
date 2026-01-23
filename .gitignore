@@ -10,3 +10,15 @@ __pycache__/
 
 # Claude
 .claude/
+
+# AI Models (large binary files)
+models/
+
+# Backup files
+*.bak
+
+# Temporary plan files
+PLAN_*.md
+
+# Local docs
+docs/
