@@ -22,6 +22,150 @@ logger = logging.getLogger(__name__)
 
 AVAILABLE_LANGS = ["en", "ko", "es", "pt", "fr"]
 
+# ============================================
+# 한국어 숫자 발음 정규화
+# ============================================
+# 한자어 숫자 (기온, 분, 번호 등에 사용)
+SINO_KOREAN_DIGITS = {
+    "0": "영", "1": "일", "2": "이", "3": "삼", "4": "사",
+    "5": "오", "6": "육", "7": "칠", "8": "팔", "9": "구",
+}
+SINO_KOREAN_UNITS = {
+    1: "", 10: "십", 100: "백", 1000: "천", 10000: "만",
+}
+
+# 고유어 숫자 (시간의 '시', 개수 등에 사용)
+NATIVE_KOREAN_NUMBERS = {
+    1: "한", 2: "두", 3: "세", 4: "네", 5: "다섯",
+    6: "여섯", 7: "일곱", 8: "여덟", 9: "아홉", 10: "열",
+    11: "열한", 12: "열두", 13: "열세", 14: "열네", 15: "열다섯",
+    16: "열여섯", 17: "열일곱", 18: "열여덟", 19: "열아홉", 20: "스물",
+    21: "스물한", 22: "스물두", 23: "스물세", 24: "스물네",
+}
+
+
+def number_to_sino_korean(num: int) -> str:
+    """숫자를 한자어 발음으로 변환 (예: 12 → 십이, 100 → 백)."""
+    if num == 0:
+        return "영"
+    if num < 0:
+        return "마이너스 " + number_to_sino_korean(-num)
+
+    result = ""
+    num_str = str(num)
+    length = len(num_str)
+
+    for i, digit in enumerate(num_str):
+        d = int(digit)
+        position = length - i - 1  # 자릿수 (0: 일의 자리, 1: 십의 자리, ...)
+
+        if d == 0:
+            continue
+
+        # 만 단위 이상 처리
+        if position >= 4:
+            # 만 단위
+            man_part = num // 10000
+            remainder = num % 10000
+            result = number_to_sino_korean(man_part) + "만"
+            if remainder > 0:
+                result += " " + number_to_sino_korean(remainder)
+            return result
+
+        # 천, 백, 십, 일 처리
+        if position == 3:  # 천
+            if d == 1:
+                result += "천"
+            else:
+                result += SINO_KOREAN_DIGITS[digit] + "천"
+        elif position == 2:  # 백
+            if d == 1:
+                result += "백"
+            else:
+                result += SINO_KOREAN_DIGITS[digit] + "백"
+        elif position == 1:  # 십
+            if d == 1:
+                result += "십"
+            else:
+                result += SINO_KOREAN_DIGITS[digit] + "십"
+        else:  # 일의 자리
+            result += SINO_KOREAN_DIGITS[digit]
+
+    return result
+
+
+def number_to_native_korean(num: int) -> str:
+    """숫자를 고유어 발음으로 변환 (예: 12 → 열두)."""
+    if num in NATIVE_KOREAN_NUMBERS:
+        return NATIVE_KOREAN_NUMBERS[num]
+    # 고유어는 보통 24까지만 사용, 그 이상은 한자어
+    return number_to_sino_korean(num)
+
+
+def normalize_korean_numbers(text: str) -> str:
+    """한국어 텍스트의 숫자를 올바른 발음으로 변환.
+
+    규칙:
+    - 도(°): 한자어 (12도 → 십이도)
+    - 분(분): 한자어 (30분 → 삼십분)
+    - 초(초): 한자어 (45초 → 사십오초)
+    - 시(시): 고유어 (12시 → 열두시)
+    - 퍼센트(%): 한자어 (50% → 오십퍼센트)
+    - 영하: 영하 십이도
+    """
+    # 영하 + 숫자 + 도
+    def replace_below_zero_temp(m):
+        num = int(m.group(1))
+        return "영하 " + number_to_sino_korean(num) + "도"
+    text = re.sub(r"영하\s*(\d+)\s*도", replace_below_zero_temp, text)
+
+    # 숫자 + 도 (기온)
+    def replace_temp(m):
+        num = int(m.group(1))
+        return number_to_sino_korean(num) + "도"
+    text = re.sub(r"(\d+)\s*도(?![로룩])", replace_temp, text)  # 도로, 도룩 제외
+
+    # 숫자 + 분 (시간)
+    def replace_minutes(m):
+        num = int(m.group(1))
+        return number_to_sino_korean(num) + "분"
+    text = re.sub(r"(\d+)\s*분", replace_minutes, text)
+
+    # 숫자 + 초
+    def replace_seconds(m):
+        num = int(m.group(1))
+        return number_to_sino_korean(num) + "초"
+    text = re.sub(r"(\d+)\s*초", replace_seconds, text)
+
+    # 숫자 + 시 (시간) - 고유어
+    def replace_hours(m):
+        num = int(m.group(1))
+        return number_to_native_korean(num) + "시"
+    text = re.sub(r"(\d+)\s*시(?![간작험])", replace_hours, text)  # 시간, 시작, 시험 제외
+
+    # 숫자 + 퍼센트/%
+    def replace_percent(m):
+        num = int(m.group(1))
+        return number_to_sino_korean(num) + "퍼센트"
+    text = re.sub(r"(\d+)\s*[%퍼센트]", replace_percent, text)
+
+    # 숫자 + 살 (나이) - 고유어
+    def replace_age(m):
+        num = int(m.group(1))
+        return number_to_native_korean(num) + "살"
+    text = re.sub(r"(\d+)\s*살", replace_age, text)
+
+    # 숫자 + 개/명/번 등 - 고유어 (24 이하)
+    def replace_counter(m):
+        num = int(m.group(1))
+        unit = m.group(2)
+        if num <= 24:
+            return number_to_native_korean(num) + unit
+        return number_to_sino_korean(num) + unit
+    text = re.sub(r"(\d+)\s*(개|명|번|마리|잔|병|권|장|대|벌|채|켤레)", replace_counter, text)
+
+    return text
+
 
 class UnicodeProcessor:
     def __init__(self, unicode_indexer_path: str):
@@ -31,6 +175,10 @@ class UnicodeProcessor:
     def _preprocess_text(self, text: str, lang: str) -> str:
         # TODO: Need advanced normalizer for better performance
         text = normalize("NFKD", text)
+
+        # 한국어 숫자 발음 정규화 (도, 시, 분 등)
+        if lang == "ko":
+            text = normalize_korean_numbers(text)
 
         # Remove emojis (wide Unicode range)
         emoji_pattern = re.compile(

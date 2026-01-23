@@ -42,7 +42,7 @@ AGENT_TZINFO = ZoneInfo(AGENT_TIMEZONE)
 TIMEOUT_CALL_CONTEXT = 10.0       # RAG context/search default for PGVector queries
 TIMEOUT_RAG_INDEXING = 10.0       # RAG indexing trigger (embedding generation)
 TIMEOUT_CALL_END = 10.0           # Call end notification (AI analysis)
-TIMEOUT_RAG_CONTEXT_WARMUP = 2.0  # Fast context fetch during call startup
+TIMEOUT_RAG_CONTEXT_WARMUP = 1.0  # 2.0→1.0: 첫 인사 지연 단축 (컨텍스트 없어도 대화 가능)
 TIMEOUT_RAG_SEARCH_QUICK = 3.0    # Quick RAG search during conversation
 TIMEOUT_GREETING_FETCH = 5.0      # Wait for personalized greeting from Redis Pub/Sub (allows time for LLM generation)
 

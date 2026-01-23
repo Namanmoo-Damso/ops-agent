@@ -50,11 +50,12 @@ class Thresholds:
     EMOTION_CRITICAL_CONFIDENCE = 0.7  # 경고: 70% 이상
     EMOTION_NEGATIVE = {"sad", "angry", "fearful", "disgusted"}
 
-    # Audio (loud_voice)
-    AUDIO_CAUTION_DECIBEL = 70.0       # 주의: 70dB 이상
-    AUDIO_CRITICAL_DECIBEL = 85.0      # 경고: 85dB 이상
-    AUDIO_CAUTION_LEVEL = 0.6          # 주의: level 0.6 이상
-    AUDIO_CRITICAL_LEVEL = 0.8         # 경고: level 0.8 이상
+    # Audio (loud_voice) - iOS는 dBFS (음수) 형식: 0dB=최대, -60dB=조용
+    # 조용: -60~-40dB, 일반대화: -40~-30dB, 큰소리: -30~-20dB, 비명: -20~0dB
+    AUDIO_CAUTION_DECIBEL = -15.0      # 주의: -15dB 이상 (비명 수준만)
+    AUDIO_CRITICAL_DECIBEL = -10.0     # 경고: -10dB 이상 (극단적 큰소리)
+    AUDIO_CAUTION_LEVEL = 0.90         # 주의: level 0.90 이상
+    AUDIO_CRITICAL_LEVEL = 0.95        # 경고: level 0.95 이상
     AUDIO_CAUTION_DURATION = 1.0       # 주의: 1초 이상 지속
     AUDIO_CRITICAL_DURATION = 2.0      # 경고: 2초 이상 지속
 
