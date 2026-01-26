@@ -7,9 +7,13 @@ Auto-RAG Mixin - 자동 RAG 검색
 
 동적 토큰 예산:
 - 질문 유형에 따라 max_tokens 자동 조절 (40~150)
+
+시간 쿼리 자동 처리:
+- "지금 몇 시야?", "시간 알려줘" 등 → get_current_time 자동 호출
 """
 
 import logging
+import re
 import time
 # from dataclasses import replace  # TODO: 동적 토큰 예산 구현 시 필요
 from datetime import datetime
@@ -17,14 +21,52 @@ from typing import AsyncIterable, Optional
 
 from livekit.agents import ModelSettings, llm
 
-from ..constants import TIMEOUT_RAG_SEARCH_QUICK
+from ..constants import AGENT_TZINFO, TIMEOUT_RAG_SEARCH_QUICK
 # from ..llm.token_budget import calculate_token_budget  # TODO: 동적 토큰 예산 구현 시 필요
 from ..rag.orchestrator import RagOrchestrator
 from ..rag.temporal_parser import get_temporal_parser
 from ..rag_client import get_shared_rag_client
 
+# 시간 쿼리 패턴 (모델이 tool을 호출하지 않을 때 직접 처리)
+TIME_QUERY_PATTERNS = [
+    r"몇\s*시",          # "몇 시", "몇시"
+    r"지금\s*시간",      # "지금 시간"
+    r"시간\s*알려",      # "시간 알려줘"
+    r"현재\s*시간",      # "현재 시간"
+    r"오늘\s*며칠",      # "오늘 며칠"
+    r"무슨\s*요일",      # "무슨 요일"
+]
+TIME_QUERY_REGEX = re.compile("|".join(TIME_QUERY_PATTERNS), re.IGNORECASE)
+
 logger = logging.getLogger(__name__)
 pipeline_timing_logger = logging.getLogger("PIPELINE_TIMING")
+
+
+def _is_time_query(text: str) -> bool:
+    """시간 관련 질문인지 확인"""
+    return bool(TIME_QUERY_REGEX.search(text))
+
+
+def _get_current_time_str() -> str:
+    """현재 시간을 한국어 형식으로 반환"""
+    now = datetime.now(AGENT_TZINFO)
+    hour = now.hour
+    minute = now.minute
+
+    # AM/PM in Korean
+    if hour < 12:
+        period = "오전"
+        display_hour = hour if hour > 0 else 12
+    else:
+        period = "오후"
+        display_hour = hour - 12 if hour > 12 else 12
+
+    # Format the time string
+    time_str = f"{now.year}년 {now.month}월 {now.day}일 {period} {display_hour}시"
+    if minute > 0:
+        time_str += f" {minute}분"
+
+    return time_str
 
 
 class AutoRAGMixin:
@@ -126,6 +168,20 @@ class AutoRAGMixin:
         tools: list,
         model_settings: ModelSettings,
     ) -> AsyncIterable[llm.ChatChunk]:
+        # 시간 쿼리 감지 및 자동 처리
+        last_user_message = self._extract_last_user_message(chat_ctx)
+        if last_user_message and _is_time_query(last_user_message):
+            current_time = _get_current_time_str()
+            try:
+                chat_ctx.add_message(
+                    role="system",
+                    content=f"[시간 정보] 현재 시간: {current_time} (한국 시간)\n\n"
+                    f"위 시간 정보를 사용하여 자연스럽게 답변하세요.",
+                )
+                logger.info(f"[AutoRAG] Time query detected, injected: {current_time}")
+            except Exception as e:
+                logger.error(f"[AutoRAG] Error injecting time info: {e}")
+
         # Auto-RAG 검색 수행
         search_result = await self._auto_rag_search(chat_ctx)
 

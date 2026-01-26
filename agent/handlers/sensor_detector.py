@@ -45,9 +45,9 @@ class DetectionResult:
 class Thresholds:
     """센서별 임계값 설정"""
 
-    # Emotion (시연용으로 confidence 낮춤)
-    EMOTION_CAUTION_CONFIDENCE = 0.3   # 주의: 30% 이상
-    EMOTION_CRITICAL_CONFIDENCE = 0.7  # 경고: 70% 이상
+    # Emotion
+    EMOTION_CAUTION_CONFIDENCE = 0.6   # 주의: 60% 이상
+    EMOTION_CRITICAL_CONFIDENCE = 0.8  # 경고: 80% 이상
     EMOTION_NEGATIVE = {"sad", "angry", "fearful", "disgusted"}
 
     # Audio (loud_voice) - iOS는 dBFS (음수) 형식: 0dB=최대, -60dB=조용

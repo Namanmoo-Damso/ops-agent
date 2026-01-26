@@ -1,9 +1,10 @@
 services:
   vllm:
-    image: vllm/vllm-openai:latest
+    image: vllm/vllm-openai:v0.11.0
     network_mode: host
     volumes:
       - huggingface-cache:/root/.cache/huggingface
+      - ./midm_parser.py:/custom/midm_parser.py
     restart: unless-stopped
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -11,19 +12,21 @@ services:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
     command:
       - --model
-      - Qwen/Qwen3-8B-AWQ
+      - jinkyeongk/Midm-2.0-Base-Instruct-AWQ
       - --quantization
       - awq_marlin
       - --max-model-len
-      - "32768"
+      - "24576"
       - --gpu-memory-utilization
-      - "0.55"
+      - "0.60"
       - --dtype
       - half
       - --trust-remote-code
       - --enable-auto-tool-choice
+      - --tool-parser-plugin
+      - /custom/midm_parser.py
       - --tool-call-parser
-      - hermes
+      - midm-parser
       - --enable-prefix-caching
     deploy:
       resources:
