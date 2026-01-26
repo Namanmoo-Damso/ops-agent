@@ -90,12 +90,14 @@ def create_llm(**kwargs) -> Any:
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
 
-        return openai.LLM(
+        llm = openai.LLM(
             model=model,
             base_url=base_url,
             api_key=api_key,
             temperature=temperature,
         )
+        logger.info(f"Created OpenAI LLM: model={model}, base_url={base_url}")
+        return llm
 
     else:
         raise ValueError(

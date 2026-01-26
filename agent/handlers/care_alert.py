@@ -299,6 +299,12 @@ class CareAlertHandler:
         """Parse JSON data into CareAlert."""
         try:
             alert_type = AlertType(data["alertType"])
+
+            # care_alert 토픽으로 온 emotion은 무시 (sensor_stream에서 처리)
+            if alert_type == AlertType.EMOTION:
+                logger.info("[CareAlert] Ignoring emotion from care_alert topic (handled via sensor_stream)")
+                return None
+
             severity = AlertSeverity(data["severity"])
             payload_data = data.get("data", {}).get("payload", {})
 
@@ -646,8 +652,8 @@ class CareAlertHandler:
         if alert.alert_type == AlertType.EMOTION:
             payload: EmotionPayload = alert.payload
 
-            # Only respond if confidence is high enough
-            if payload.confidence < 0.7:
+            # Only respond if confidence is high enough (critical level)
+            if payload.confidence < 0.8:
                 return None
 
             # Track consecutive same emotion detections
@@ -1095,16 +1101,16 @@ class CareAlertHandler:
     def _determine_emotion_status(self, emotion: str, confidence: float) -> str:
         """Determine emotion status based on thresholds.
 
-        - Negative emotions (sad, angry, fearful, disgusted) with confidence >= 0.7 -> critical
-        - Negative emotions with confidence >= 0.3 -> caution
+        - Negative emotions (sad, angry, fearful, disgusted) with confidence >= 0.8 -> critical
+        - Negative emotions with confidence >= 0.6 -> caution
         - Otherwise -> normal
         """
         negative_emotions = {"sad", "angry", "fearful", "disgusted"}
 
         if emotion.lower() in negative_emotions:
-            if confidence >= 0.7:
+            if confidence >= 0.8:
                 return "critical"
-            elif confidence >= 0.3:
+            elif confidence >= 0.6:
                 return "caution"
 
         return "normal"

@@ -86,6 +86,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Enable httpx debug logging to see LLM API calls (temporary debugging)
+# logging.getLogger("httpx").setLevel(logging.DEBUG)
+# logging.getLogger("httpcore").setLevel(logging.DEBUG)
+
 # Create AgentServer instance
 server = AgentServer()
 
@@ -390,8 +394,13 @@ async def entrypoint(ctx: JobContext):
         longitude=longitude,
     )
 
-    # Debug: Log registered tools
+    # Debug: Log registered tools with details
     logger.info(f"[Agent] Registered tools: {agent.tools}")
+    for tool in agent.tools:
+        try:
+            logger.info(f"[Agent] Tool: {tool.name} - {tool.description[:100]}...")
+        except Exception as e:
+            logger.info(f"[Agent] Tool details error: {e}")
 
     # VAD timing: track when user starts/stops speaking
     pipeline_timing_logger = logging.getLogger("PIPELINE_TIMING")
